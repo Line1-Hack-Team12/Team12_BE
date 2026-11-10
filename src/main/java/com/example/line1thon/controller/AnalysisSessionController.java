@@ -1,9 +1,6 @@
 package com.example.line1thon.controller;
 
-import com.example.line1thon.dto.ConfirmLowConfidenceRequest;
-import com.example.line1thon.dto.ReviewSummaryResponse;
-import com.example.line1thon.dto.SessionConfirmResponse;
-import com.example.line1thon.dto.SessionDetailResponse;
+import com.example.line1thon.dto.*;
 import com.example.line1thon.entity.AnalysisSession;
 import com.example.line1thon.global.common.ApiResponse;
 import com.example.line1thon.service.AnalysisSessionService;
@@ -16,7 +13,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 
-@Tag(name = "01. Analysis Session", description = "S01/S02 세션 생성, 파일 업로드 및 추출 상태 관리 API")
+@Tag(name = "01. Analysis Session", description = "S01/S02 세션 생성 및 추출 상태 관리, S03 확정 및 분석 API")
 @RestController
 @RequestMapping("/api/sessions")
 @RequiredArgsConstructor
@@ -89,27 +86,26 @@ public class AnalysisSessionController {
         return ApiResponse.ok(sessionService.getReviewSummary(sessionId));
     }
 
-    @Operation(summary = "S03 [두 행을 수정·확인하기]", description = "확신 낮은 행 확인을 완료하여 체크박스를 활성화합니다.")
-    @PostMapping("/{sessionId}/review/confirm-low-confidence")
-    public ApiResponse<Boolean> confirmLowConfidence(
-            @PathVariable Long sessionId,
-            @RequestBody ConfirmLowConfidenceRequest request) {
-        boolean canConfirm = sessionService.confirmLowConfidenceItems(sessionId, request);
-        return ApiResponse.ok("확인 처리가 완료되었습니다.", canConfirm);
+    @Operation(summary = "S03 건수와 합계 확인 체크박스 체크",
+            description = "체크박스 체크 시 호출되어 S03-R(건수와 합계 확인 완료) 화면 데이터를 반환합니다.")
+    @PostMapping("/{sessionId}/review/check")
+    public ApiResponse<ReviewCompletedResponse> checkReviewSummary(@PathVariable Long sessionId) {
+        return ApiResponse.ok("확인 완료 처리되었습니다. S03-R 요약 정보를 반환합니다.",
+                sessionService.checkAndGetCompletedSummary(sessionId));
     }
 
-    @Operation(summary = "S03 [계속] 최종 확정", description = "검토를 마치고 S05 결과 화면으로 이동합니다.")
+    @Operation(summary = "S03-R [계속 · 확정하고 분석] 클릭",
+            description = "최종 확정하고 S03-P 분석 진행 화면으로 이동합니다.")
     @PostMapping("/{sessionId}/confirm")
     public ApiResponse<SessionConfirmResponse> confirmSession(@PathVariable Long sessionId) {
-        sessionService.confirmAndComplete(sessionId);
+        return ApiResponse.ok("소비 데이터가 확정되었으며 최종 분석을 시작합니다.",
+                sessionService.confirmAndStartAnalysis(sessionId));
+    }
 
-        SessionConfirmResponse response = SessionConfirmResponse.builder()
-                .sessionId(sessionId)
-                .snapshotId(1001L)
-                .status("COMPLETED")
-                .nextStepUrl("/snapshots/1001/home")
-                .build();
-
-        return ApiResponse.ok("소비 데이터가 확정되었습니다. 결과 화면으로 이동합니다.", response);
+    @Operation(summary = "S03-P 최종 분석 진행 상태 폴링",
+            description = "최종 집계, 반복 패턴 찾기, 문장 작성 3단계 진행 상황을 조회합니다.")
+    @GetMapping("/{sessionId}/analysis/status")
+    public ApiResponse<FinalAnalysisStatusResponse> getFinalAnalysisStatus(@PathVariable Long sessionId) {
+        return ApiResponse.ok(sessionService.getFinalAnalysisStatus(sessionId));
     }
 }

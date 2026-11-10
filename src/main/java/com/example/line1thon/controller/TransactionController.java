@@ -43,8 +43,7 @@ public class TransactionController {
         return ApiResponse.ok(transactionService.getTransactionDetail(transactionId));
     }
 
-    @Operation(summary = "내역 수정 / 그대로 두기 / 제외 / 복원 통합 처리",
-            description = "하단 3개 버튼(수정 저장, 그대로 두기, 이 내역 제외) 및 복원 클릭 시 호출됩니다.")
+    @Operation(summary = "내역 수정 / 그대로 두기 / 제외 / 복원 통합 처리")
     @PutMapping("/api/transactions/{transactionId}")
     public ApiResponse<TransactionUpdateResponse> updateTransaction(
             @PathVariable Long transactionId,

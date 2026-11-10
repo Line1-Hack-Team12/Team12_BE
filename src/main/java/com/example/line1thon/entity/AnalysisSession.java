@@ -62,6 +62,6 @@ public class AnalysisSession {
     }
 
     public enum SessionStatus {
-        UPLOADED, EXTRACTING, PARTIAL_FAILED, REVIEWING, COMPLETED
+        UPLOADED, EXTRACTING, PARTIAL_FAILED, REVIEWING, ANALYZING, COMPLETED
     }
 }

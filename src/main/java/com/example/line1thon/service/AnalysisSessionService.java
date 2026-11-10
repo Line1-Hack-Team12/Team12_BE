@@ -1,8 +1,6 @@
 package com.example.line1thon.service;
 
-import com.example.line1thon.dto.ConfirmLowConfidenceRequest;
-import com.example.line1thon.dto.ReviewSummaryResponse;
-import com.example.line1thon.dto.SessionDetailResponse;
+import com.example.line1thon.dto.*;
 import com.example.line1thon.entity.AnalysisSession;
 import com.example.line1thon.entity.UploadedFile;
 import com.example.line1thon.repository.AnalysisSessionRepository;
@@ -71,7 +69,6 @@ public class AnalysisSessionService {
                 .filter(f -> f.getStatus() == UploadedFile.ProcessStatus.FAILED)
                 .toList();
 
-        // S02 4단계 표시
         List<SessionDetailResponse.StepDto> steps = List.of(
                 SessionDetailResponse.StepDto.builder().stepNumber(1).name("캡처 읽기").status("COMPLETED").build(),
                 SessionDetailResponse.StepDto.builder().stepNumber(2).name("가맹점 분류")
@@ -80,7 +77,6 @@ public class AnalysisSessionService {
                 SessionDetailResponse.StepDto.builder().stepNumber(4).name("패턴 후보 찾기").status("WAITING").build()
         );
 
-        // 파일별 상태 표시
         List<SessionDetailResponse.FileStatusDto> fileStatuses = new ArrayList<>();
         if (!files.isEmpty()) {
             for (int i = 0; i < files.size(); i++) {
@@ -128,7 +124,6 @@ public class AnalysisSessionService {
                 .build();
     }
 
-    // 데모: 파일 실패 예시 버튼 클릭
     @Transactional
     public void simulateFail(Long sessionId) {
         AnalysisSession session = findSession(sessionId);
@@ -148,52 +143,41 @@ public class AnalysisSessionService {
         }
     }
 
-    // 데모: 완료 상태 보기 버튼 클릭
     @Transactional
     public void simulateComplete(Long sessionId) {
         AnalysisSession session = findSession(sessionId);
         session.updateStatus(AnalysisSession.SessionStatus.REVIEWING);
     }
 
-    // 실패 화면: [성공한 7장으로 검토] -> S03 검토로 이동
     @Transactional
     public void proceedWithSuccessful(Long sessionId) {
         AnalysisSession session = findSession(sessionId);
-        // 실패한 파일은 세션에서 삭제(제외) 처리
         List<UploadedFile> failedFiles = fileRepository.findBySessionAndStatus(session, UploadedFile.ProcessStatus.FAILED);
         fileRepository.deleteAll(failedFiles);
         session.updateStatus(AnalysisSession.SessionStatus.REVIEWING);
     }
 
-    // 실패 화면: [실패한 파일만 다시 시도] -> S02 진행 화면으로 복귀
     @Transactional
     public void retryFailedFiles(Long sessionId) {
         AnalysisSession session = findSession(sessionId);
         List<UploadedFile> failedFiles = fileRepository.findBySessionAndStatus(session, UploadedFile.ProcessStatus.FAILED);
         for (UploadedFile f : failedFiles) {
-            f.markSuccess(); // 재시도 진행
+            f.markSuccess();
         }
-        session.updateStatus(AnalysisSession.SessionStatus.EXTRACTING); // S02 진행 화면으로 복귀
+        session.updateStatus(AnalysisSession.SessionStatus.EXTRACTING);
     }
 
-    // 실패 화면: [캡처 교체하기] -> 실패 파일 삭제 후 S01 화면으로 복귀
     @Transactional
     public void resetForReplace(Long sessionId) {
         AnalysisSession session = findSession(sessionId);
         List<UploadedFile> failedFiles = fileRepository.findBySessionAndStatus(session, UploadedFile.ProcessStatus.FAILED);
-        fileRepository.deleteAll(failedFiles); // 실패한 파일 제거
-        session.updateStatus(AnalysisSession.SessionStatus.UPLOADED); // S01 캡처 화면으로 복귀
+        fileRepository.deleteAll(failedFiles);
+        session.updateStatus(AnalysisSession.SessionStatus.UPLOADED);
     }
 
-    public AnalysisSession findSession(Long sessionId) {
-        return sessionRepository.findById(sessionId)
-                .orElseThrow(() -> new IllegalArgumentException("세션을 찾을 수 없습니다. id=" + sessionId));
-    }
-    // S03: 검토 화면 데이터 조회
     public ReviewSummaryResponse getReviewSummary(Long sessionId) {
         AnalysisSession session = findSession(sessionId);
 
-        // 디자인 화면과 100% 동일한 목업 데이터 생성
         ReviewSummaryResponse.SummaryDto summary = ReviewSummaryResponse.SummaryDto.builder()
                 .slotDescription("업로드한 8~10월 기록 기준 · 슬롯 " + session.getMonthsCount() + "개")
                 .statusTag("검토 중")
@@ -236,22 +220,81 @@ public class AnalysisSessionService {
                 .summary(summary)
                 .lowConfidenceQueue(lowConfidence)
                 .duplicateSummary(duplicateSummary)
-                .canConfirm(false) // 아직 확인 전이므로 체크박스 비활성화
+                .canConfirm(false)
                 .build();
     }
 
-    // S03: 확신 낮은 행 확인 처리
     @Transactional
-    public boolean confirmLowConfidenceItems(Long sessionId, ConfirmLowConfidenceRequest request) {
-        // 실제 운영 시 DB Transaction 엔티티 금액 업데이트 로직
-        // 현재는 디자인 연동을 위해 확인 성공(true)으로 반환
-        return true;
+    public ReviewCompletedResponse checkAndGetCompletedSummary(Long sessionId) {
+        AnalysisSession session = findSession(sessionId);
+
+        return ReviewCompletedResponse.builder()
+                .sessionId(session.getId())
+                .slotDescription("업로드한 8~10월 기록 기준")
+                .statusTag("검토 중")
+                .totalCount(87)
+                .totalExpense(1243500L)
+                .reviewedSummary(ReviewCompletedResponse.ReviewedItemCounts.builder()
+                        .lowConfidenceCount(2)
+                        .duplicateCount(3)
+                        .requiredValueErrorCount(0)
+                        .build())
+                .isChecked(true)
+                .guideMessage("계속하면 확정한 기록으로 패턴을 계산해요. 원본 이미지 삭제가 시작돼요.")
+                .build();
     }
 
-    // S03: 맞아요 체크 후 [계속] 클릭 (최종 확정)
     @Transactional
-    public void confirmAndComplete(Long sessionId) {
+    public SessionConfirmResponse confirmAndStartAnalysis(Long sessionId) {
         AnalysisSession session = findSession(sessionId);
-        session.updateStatus(AnalysisSession.SessionStatus.COMPLETED);
+        session.updateStatus(AnalysisSession.SessionStatus.ANALYZING);
+
+        return SessionConfirmResponse.builder()
+                .sessionId(sessionId)
+                .snapshotId(1001L)
+                .status("ANALYZING")
+                .nextStepUrl("/api/sessions/" + sessionId + "/analysis/status")
+                .build();
+    }
+
+    public FinalAnalysisStatusResponse getFinalAnalysisStatus(Long sessionId) {
+        AnalysisSession session = findSession(sessionId);
+
+        List<FinalAnalysisStatusResponse.StepInfo> steps = List.of(
+                FinalAnalysisStatusResponse.StepInfo.builder()
+                        .stepNumber(1)
+                        .name("최종 집계")
+                        .detail("지출 87건 · 1,243,500원")
+                        .status("COMPLETED")
+                        .build(),
+                FinalAnalysisStatusResponse.StepInfo.builder()
+                        .stepNumber(2)
+                        .name("반복 패턴 찾기")
+                        .detail("요일 · 늦은 시간 · 연쇄 · 날씨")
+                        .status("IN_PROGRESS")
+                        .build(),
+                FinalAnalysisStatusResponse.StepInfo.builder()
+                        .stepNumber(3)
+                        .name("설명 문장 쓰기")
+                        .detail(session.getPersona() != null ? session.getPersona().name().toLowerCase() + " 말투로" : "코치 말투로")
+                        .status("WAITING")
+                        .build()
+        );
+
+        return FinalAnalysisStatusResponse.builder()
+                .sessionId(session.getId())
+                .snapshotId(1001L)
+                .status("ANALYZING")
+                .title("확정한 87건으로 최종 분석하고 있어요")
+                .subTitle("이제 숫자는 바뀌지 않아요. 원본 캡처 삭제를 시작했어요.")
+                .currentStep(2)
+                .steps(steps)
+                .guideMessage("완료되면 결과 홈으로 이동해요. 숫자 요약은 먼저 보여드리고, 문장은 준비되는 대로 채워요.")
+                .build();
+    }
+
+    public AnalysisSession findSession(Long sessionId) {
+        return sessionRepository.findById(sessionId)
+                .orElseThrow(() -> new IllegalArgumentException("세션을 찾을 수 없습니다. id=" + sessionId));
     }
 }
