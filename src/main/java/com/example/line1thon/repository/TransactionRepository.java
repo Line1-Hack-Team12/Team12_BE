@@ -8,5 +8,4 @@ import java.util.List;
 
 public interface TransactionRepository extends JpaRepository<Transaction, Long> {
     List<Transaction> findBySession(AnalysisSession session);
-    List<Transaction> findBySessionAndIsExcludedFalse(AnalysisSession session);
 }
