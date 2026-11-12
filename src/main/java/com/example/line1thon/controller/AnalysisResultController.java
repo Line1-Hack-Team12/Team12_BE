@@ -12,8 +12,10 @@ import com.example.line1thon.dto.PatternDetailResponse;
 import com.example.line1thon.dto.NarrativeRegenerateRequest;
 import java.util.List;
 import com.example.line1thon.service.AnalysisPatternService;
+import com.example.line1thon.service.AiNarrativeService;
 
 import com.example.line1thon.repository.TransactionRepository;
+import com.example.line1thon.repository.AnalysisSessionRepository;
 import java.time.format.DateTimeFormatter;
 import org.springframework.http.HttpStatus;
 
@@ -31,60 +33,63 @@ public class AnalysisResultController {
     private final PatternResponseService patternResponseService;
     private final AnalysisPatternService analysisPatternService;
     private final TransactionRepository transactionRepository;
+    private final AiNarrativeService aiNarrativeService;
+    private final AnalysisSessionRepository sessionRepository;
 
 
-    // S05: 실제 거래 내역 기반 소비 패턴 분석 결과 조회
+    // S05: 실제 거래 내역 기반 소비 패턴 분석 결과 및 AI 설명 조회
     @GetMapping("/{analysisId}/result")
     public ApiResponse<AnalysisResultResponse> getAnalysisResult(
             @PathVariable Long analysisId) {
 
-        // 1. DB 거래 조회 및 F08 패턴 탐지
         var analysis = analysisPatternService.analyze(analysisId);
+        var persona = sessionRepository.findById(analysisId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "분석 세션이 없습니다."))
+                .getPersona();
+        var generated = aiNarrativeService.generateCached(
+                analysisId, analysis.patterns(), persona);
 
-        // 2. 탐지된 패턴을 프론트 응답 형태로 변환
         var cards = analysis.patterns().stream()
-                .map(pattern -> new AnalysisResultResponse.PatternCard(
-                        pattern.patternId(),
-                        pattern.type(),
-                        pattern.condition(),
-                        pattern.observedDays(),
-                        pattern.sumKrw(),
-                        pattern.chainedSumKrw(),
-                        pattern.evidenceGrade(),
-                        pattern.condition() + "이(가) "
-                                + pattern.observedDays() + "일 관찰됐어요.",
-                        "이러한 소비가 반복된 이유가 있을까요?",
-                        "다음 소비에서는 지출을 한 번 점검해 보세요."
-                ))
-                .toList();
+                .map(pattern -> {
+                    var text = generated.narratives().stream()
+                            .filter(n -> pattern.patternId().equals(n.patternId()))
+                            .findFirst()
+                            .orElseThrow(() -> new ResponseStatusException(
+                                    HttpStatus.INTERNAL_SERVER_ERROR,
+                                    "설명 생성 결과가 누락되었습니다."));
+                    return new AnalysisResultResponse.PatternCard(
+                            pattern.patternId(),
+                            pattern.type(),
+                            pattern.condition(),
+                            pattern.observedDays(),
+                            pattern.sumKrw(),
+                            pattern.chainedSumKrw(),
+                            pattern.evidenceGrade(),
+                            text.observation(),
+                            text.hypothesisQuestion(),
+                            text.action()
+                    );
+                }).toList();
 
-        // 3. 실제 지출 건수 및 총금액
         var summary = new AnalysisResultResponse.Summary(
                 analysis.transactionCount(),
                 analysis.totalExpenseKrw(),
                 analysis.transactionCount() == 0
                         ? "저장된 소비 내역이 없습니다."
-                        : "총 " + analysis.transactionCount()
-                        + "건의 지출을 분석했어요."
+                        : generated.overallComment()
         );
 
-        // 4. 최종 응답 생성
         var result = new AnalysisResultResponse(
                 analysisId,
                 null,
                 analysis.sessionStatus(),
                 summary,
                 cards,
-                analysis.transactionCount() == 0
-                        ? "NO_DATA"
-                        : null
+                analysis.transactionCount() == 0 ? "NO_DATA" : null
         );
-
         return ApiResponse.ok(result);
     }
-
-
-
 
     // S05-1: 실제 소비 패턴 상세 조회
     @GetMapping("/{analysisId}/patterns/{patternId}")
@@ -193,7 +198,7 @@ public class AnalysisResultController {
 
 
 
-    // S05: 실제 소비 패턴 기반 말투별 설명 생성
+    // S05: 실제 소비 패턴 기반 AI 말투별 설명 재생성
     @PostMapping("/{analysisId}/narratives")
     public ApiResponse<NarrativeRegenerateResponse> regenerateNarratives(
             @PathVariable Long analysisId,
@@ -201,66 +206,38 @@ public class AnalysisResultController {
 
         if (request == null || request.persona() == null) {
             throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST,
-                    "말투를 선택해 주세요."
-            );
+                    HttpStatus.BAD_REQUEST, "말투를 선택해 주세요.");
         }
 
-        // 1. 실제 분석 결과 가져오기
         var analysis = analysisPatternService.analyze(analysisId);
+        var generated = aiNarrativeService.regenerate(
+                analysisId, analysis.patterns(), request.persona());
 
-        // 2. 탐지된 모든 패턴에 맞춰 문장 생성
         var narratives = analysis.patterns().stream()
                 .map(pattern -> {
-
-                    String condition = pattern.condition();
-                    int days = pattern.observedDays();
-
-                    return switch (request.persona()) {
-
-                        case COACH -> new PatternNarrative(
-                                pattern.patternId(),
-                                condition,
-                                condition + " 패턴이 " + days + "일 관찰됐어요.",
-                                "이 소비가 반복된 이유가 있을까요?",
-                                "다음에는 지출을 한 번 점검해 보세요."
-                        );
-
-                        case FRIEND -> new PatternNarrative(
-                                pattern.patternId(),
-                                condition,
-                                condition + " 패턴이 " + days + "일이나 나타났네!",
-                                "혹시 특별한 이유가 있었어?",
-                                "다음에는 한 번 더 생각하고 소비해 보자!"
-                        );
-
-                        case GRANDMOTHER -> new PatternNarrative(
-                                pattern.patternId(),
-                                condition,
-                                condition + " 패턴이 " + days + "일이나 있었구나.",
-                                "무슨 사정이 있었던 게냐?",
-                                "앞으로는 조금씩 살펴보면 좋겠구나."
-                        );
-                    };
+                    var text = generated.narratives().stream()
+                            .filter(n -> pattern.patternId().equals(n.patternId()))
+                            .findFirst()
+                            .orElseThrow(() -> new ResponseStatusException(
+                                    HttpStatus.INTERNAL_SERVER_ERROR,
+                                    "설명 생성 결과가 누락되었습니다."));
+                    return new PatternNarrative(
+                            pattern.patternId(),
+                            pattern.condition(),
+                            text.observation(),
+                            text.hypothesisQuestion(),
+                            text.action()
+                    );
                 })
                 .toList();
 
-        // 3. 말투별 전체 요약 문장
-        String overallComment = switch (request.persona()) {
-            case COACH -> "반복되는 소비를 확인하고 작은 실천부터 시작해 보세요.";
-            case FRIEND -> "우리 소비 습관을 같이 하나씩 바꿔보자!";
-            case GRANDMOTHER -> "작은 습관부터 고쳐나가면 되는 게야.";
-        };
-
-        // 4. 최종 응답 생성
         var response = new NarrativeRegenerateResponse(
                 analysisId,
                 request.persona().name(),
-                "TEMPLATE",
-                overallComment,
+                generated.status(),
+                generated.overallComment(),
                 narratives
         );
-
         return ApiResponse.ok(response);
     }
 
