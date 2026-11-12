@@ -153,7 +153,9 @@ public class AnalysisResultController {
                 "다음 소비에서는 지출을 한 번 점검해 보세요.",
                 transactions,
                 causeTags,
-                responseStatus
+                responseStatus,
+                savedResponse == null ? null : savedResponse.getCustomReason(),
+                savedResponse == null ? 0L : savedResponse.getRevision()
         );
 
         return ApiResponse.ok(detail);
