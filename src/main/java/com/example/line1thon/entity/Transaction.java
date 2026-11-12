@@ -1,17 +1,17 @@
 package com.example.line1thon.entity;
 
 import jakarta.persistence.*;
-import lombok.AccessLevel;
-import lombok.Builder;
-import lombok.Getter;
-import lombok.NoArgsConstructor;
+import lombok.*;
 
-import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 
 @Entity
 @Table(name = "transactions")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
+@AllArgsConstructor
+@Builder
 public class Transaction {
 
     @Id
@@ -22,46 +22,77 @@ public class Transaction {
     @JoinColumn(name = "session_id", nullable = false)
     private AnalysisSession session;
 
-    @Column(nullable = false, length = 7)
-    private String slotMonth; // "2026-08", "2026-09", "2026-10"
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "uploaded_file_id")
+    private UploadedFile uploadedFile;
 
-    private LocalDateTime transactionDateTime; // 결제 일시
+    private String txId;
+    private String date;
+    private String time;
+    private String storeName;
+    private Long amount;
 
-    @Column(nullable = false)
-    private String storeName; // 가맹점명
+    private String direction;  // in, out, unknown
+    private String kind;       // expense, income, transfer, self_transfer, refund, cancel, unknown
+    private String confidence; // high, medium, low
 
-    @Column(nullable = false)
-    private Long amount; // 결제 금액
+    @Column(columnDefinition = "TEXT")
+    private String rawText;
 
-    private String category; // 배달, 택시, 카페 등
+    @ElementCollection
+    @CollectionTable(name = "transaction_flags", joinColumns = @JoinColumn(name = "transaction_id"))
+    @Column(name = "flag")
+    @Builder.Default
+    private List<String> flags = new ArrayList<>();
 
-    private Double confidence; // AI 신뢰도 점수
+    @Builder.Default
+    private Boolean isExcluded = false;
 
-    private Boolean isExcluded; // S03 제외 여부
+    // ================= 비즈니스 로직 추가 ================= //
 
-    private Long duplicateGroupId; // 중복 후보 묶음 ID
-
-    @Builder
-    public Transaction(AnalysisSession session, String slotMonth, LocalDateTime transactionDateTime,
-                       String storeName, Long amount, String category, Double confidence, Long duplicateGroupId) {
-        this.session = session;
-        this.slotMonth = slotMonth;
-        this.transactionDateTime = transactionDateTime;
-        this.storeName = storeName;
-        this.amount = amount;
-        this.category = category;
-        this.confidence = confidence != null ? confidence : 1.0;
-        this.isExcluded = false;
-        this.duplicateGroupId = duplicateGroupId;
+    /**
+     * 검토 큐(확인 필요) 대상 여부 판별
+     */
+    public boolean isReviewNeeded() {
+        if (this.flags == null || this.flags.isEmpty()) {
+            return false;
+        }
+        return this.flags.contains("date_missing")
+                || this.flags.contains("merchant_missing")
+                || this.flags.contains("unknown_direction")
+                || this.flags.contains("low_confidence")
+                || this.flags.contains("month_mismatch");
     }
 
-    public void updateTransaction(String storeName, Long amount, String category) {
-        this.storeName = storeName;
-        this.amount = amount;
-        this.category = category;
+    /**
+     * F07 지출 합계 포함 여부 판별
+     * - self_transfer: 본인 계좌 간 이동 제외
+     * - refund / cancel: 환불/취소 (금액 차감 대상이거나 별도 처리)
+     * - expense + out, transfer + out: 일반 지출
+     */
+    public boolean isCountedAsExpense() {
+        if (Boolean.TRUE.equals(this.isExcluded)) {
+            return false;
+        }
+        if ("self_transfer".equals(this.kind)) {
+            return false;
+        }
+        return ("expense".equals(this.kind) && "out".equals(this.direction))
+                || ("transfer".equals(this.kind) && "out".equals(this.direction));
     }
-
-    public void setExcluded(boolean excluded) {
-        this.isExcluded = excluded;
+    public void updateDetails(String date, String time, String storeName, Long amount, boolean isExcluded) {
+        if (date != null) {
+            this.date = date;
+        }
+        if (time != null) {
+            this.time = time;
+        }
+        if (storeName != null) {
+            this.storeName = storeName;
+        }
+        if (amount != null) {
+            this.amount = amount;
+        }
+        this.isExcluded = isExcluded;
     }
 }
