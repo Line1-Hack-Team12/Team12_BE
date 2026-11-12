@@ -17,7 +17,9 @@ public record PatternDetailResponse(
         String action,
         List<EvidenceTransaction> evidenceTransactions,
         List<String> causeTags,
-        String responseStatus
+        String responseStatus,
+        String customReason,
+        Long revision
 ) {
 
     // 소비 패턴의 근거가 되는 거래 내역
