@@ -18,6 +18,7 @@ import java.util.Set;
 public class PatternResponseService {
 
     private final PatternResponseRepository repository;
+    private final AnalysisPatternService analysisPatternService;
 
     // 기능 명세에 정의된 원인 태그
     private static final Set<String> ALLOWED_TAGS = Set.of(
@@ -52,14 +53,21 @@ public class PatternResponseService {
             throw badRequest("잘못된 요청입니다.");
         }
 
-        // TODO: 실제 패턴 DB와 연결하여 존재 여부 확인
-        // 현재 데모에는 패턴 1번만 있음
-        if (!patternId.equals(1L)) {
+
+        // 실제 탐지 결과에 존재하는 패턴인지 확인
+        boolean patternExists = analysisPatternService
+                .analyze(analysisId)
+                .patterns()
+                .stream()
+                .anyMatch(p -> p.patternId().equals(patternId));
+
+        if (!patternExists) {
             throw new ResponseStatusException(
                     HttpStatus.NOT_FOUND,
                     "해당 소비 패턴을 찾을 수 없습니다."
             );
         }
+
 
         String status = request.responseStatus();
 
