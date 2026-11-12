@@ -104,21 +104,17 @@ public class AnalysisResultController {
                         "해당 소비 패턴을 찾을 수 없습니다."
                 ));
 
-        // 3. 패턴의 근거 거래 조회
-        var formatter = DateTimeFormatter.ofPattern("HH:mm");
 
+        // 3. 패턴의 근거 거래 조회
         var transactions = transactionRepository
                 .findAllById(pattern.evidenceTransactionIds())
                 .stream()
-                .filter(t -> t.getTransactionDateTime() != null)
                 .map(t -> new PatternDetailResponse.EvidenceTransaction(
                         t.getId(),
-                        t.getTransactionDateTime()
-                                .toLocalDate().toString(),
-                        t.getTransactionDateTime()
-                                .toLocalTime().format(formatter),
+                        t.getDate(),
+                        t.getTime(),
                         t.getStoreName(),
-                        t.getAmount()
+                        t.getAmount() == null ? 0L : t.getAmount()
                 ))
                 .toList();
 
