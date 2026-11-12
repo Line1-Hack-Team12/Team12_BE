@@ -3,6 +3,7 @@ package com.example.line1thon.repository;
 import com.example.line1thon.entity.PatternResponse;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.util.List;
 import java.util.Optional;
 
 public interface PatternResponseRepository
@@ -13,4 +14,6 @@ public interface PatternResponseRepository
             Long analysisId,
             Long patternId
     );
+    // 세션(분석 ID)의 전체 원인 응답 목록 조회
+    List<PatternResponse> findByAnalysisId(Long analysisId);
 }

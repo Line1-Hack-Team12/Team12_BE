@@ -19,6 +19,9 @@ public class ReportService {
 
     private final AnalysisSessionRepository sessionRepository;
     private final TransactionRepository transactionRepository;
+    private final AnalysisPatternService analysisPatternService;
+    private final AiNarrativeService aiNarrativeService;
+    private final AiServiceClient aiServiceClient;
 
     public ConsumptionReportResponse getConsumptionReport(Long sessionId) {
         AnalysisSession session = sessionRepository.findById(sessionId)
@@ -31,10 +34,12 @@ public class ReportService {
 
         long totalExpense = expenses.stream().mapToLong(Transaction::getAmount).sum();
 
-        // 1. 카테고리별 비중 계산 (세부 카테고리 자동 추론 적용)
+        // 1. 카테고리별 비중 계산 (6절 /classify 응답 우선 활용, 미구현 시 로컬 분류기 Fallback)
+        Map<String, String> aiCategoryByMerchant = fetchAiCategories(expenses);
+
         Map<String, Long> categoryMap = expenses.stream()
                 .collect(Collectors.groupingBy(
-                        this::resolveCategory,
+                        tx -> resolveCategory(tx, aiCategoryByMerchant),
                         Collectors.summingLong(Transaction::getAmount)
                 ));
 
@@ -58,21 +63,21 @@ public class ReportService {
                 ? "분석할 지출 내역이 아직 없어요."
                 : "소비가 " + topCategoriesText + "에 집중됐어요.";
 
-        // 2. 월별 추이 계산
-        Map<String, Long> monthMap = new TreeMap<>();
+        // 2. 월별 추이 계산 (시간순 정렬: 09월 -> 10월)
+        Map<String, Long> monthSortMap = new TreeMap<>();
         for (Transaction tx : expenses) {
-            String monthLabel = extractMonthLabel(tx.getDate());
-            monthMap.merge(monthLabel, tx.getAmount(), Long::sum);
+            String sortableMonth = extractSortableMonthKey(tx.getDate());
+            monthSortMap.merge(sortableMonth, tx.getAmount(), Long::sum);
         }
 
         List<ConsumptionReportResponse.MonthlyAmountDto> monthlyAmounts = new ArrayList<>();
-        List<String> months = new ArrayList<>(monthMap.keySet());
-        for (int i = 0; i < months.size(); i++) {
-            String m = months.get(i);
+        List<String> sortedKeys = new ArrayList<>(monthSortMap.keySet());
+        for (int i = 0; i < sortedKeys.size(); i++) {
+            String key = sortedKeys.get(i);
             monthlyAmounts.add(ConsumptionReportResponse.MonthlyAmountDto.builder()
-                    .month(m)
-                    .amount(monthMap.get(m))
-                    .isLatest(i == months.size() - 1)
+                    .month(formatDisplayMonth(key))
+                    .amount(monthSortMap.get(key))
+                    .isLatest(i == sortedKeys.size() - 1)
                     .build());
         }
 
@@ -90,6 +95,58 @@ public class ReportService {
                 ? String.format("업로드 없는 날은 0원으로 추정하지 않아요. 시각 미상 %d건은 시간 분석에서 제외됐어요.", unknownTimeCount)
                 : "업로드 없는 날은 0원으로 추정하지 않아요.";
 
+        // 5. S05 탐지 패턴 & 7절 AI /narrate 연동 (미구현 시 기존 AiNarrativeService Fallback)
+        String observedPattern = "반복 소비 패턴을 분석했어요.";
+        String recommendedAction = "결제 전 장바구니와 보유 내역을 한 번 더 확인해 보세요.";
+
+        AnalysisPatternService.AnalysisData analysisData = analysisPatternService.analyze(sessionId);
+        List<AnalysisPatternService.PatternItem> patterns = analysisData.patterns();
+
+        if (!patterns.isEmpty()) {
+            AnalysisSession.Persona persona = session.getPersona() != null
+                    ? session.getPersona()
+                    : AnalysisSession.Persona.COACH;
+
+            Optional<AiServiceClient.NarrateResponse> narrateOpt = callAiNarrate(
+                    sessionId, persona, patterns, totalExpense, categoryRatios, monthlyAmounts, subItems, unknownTimeCount
+            );
+
+            if (narrateOpt.isPresent()) {
+                AiServiceClient.NarrateResponse nr = narrateOpt.get();
+                if (nr.summaryLine() != null && !nr.summaryLine().isBlank()) {
+                    highlightMessage = nr.summaryLine();
+                }
+                if (nr.cards() != null && !nr.cards().isEmpty()) {
+                    AiServiceClient.NarrateCard topCard = nr.cards().get(0);
+                    if (topCard.observation() != null && !topCard.observation().isBlank()) {
+                        observedPattern = topCard.observation();
+                    }
+                    if (topCard.action() != null && !topCard.action().isBlank()) {
+                        recommendedAction = topCard.action();
+                    }
+                }
+                if (nr.report() != null) {
+                    if (nr.report().actions() != null && !nr.report().actions().isEmpty()) {
+                        recommendedAction = nr.report().actions().get(0);
+                    }
+                    if (nr.report().limitsSentence() != null && !nr.report().limitsSentence().isBlank()) {
+                        noticeMessage = nr.report().limitsSentence();
+                    }
+                }
+            } else {
+                AiNarrativeService.Result narrativeResult =
+                        aiNarrativeService.generateCached(sessionId, patterns, persona);
+                if (!narrativeResult.narratives().isEmpty()) {
+                    AiNarrativeService.Narrative topNarrative = narrativeResult.narratives().get(0);
+                    observedPattern = topNarrative.observation();
+                    recommendedAction = topNarrative.action();
+                } else {
+                    AnalysisPatternService.PatternItem topPattern = patterns.get(0);
+                    observedPattern = topPattern.condition() + " 패턴이 " + topPattern.observedDays() + "일 관찰됐어요.";
+                }
+            }
+        }
+
         return ConsumptionReportResponse.builder()
                 .sessionId(sessionId)
                 .headerSummary(ConsumptionReportResponse.HeaderSummaryDto.builder()
@@ -102,10 +159,9 @@ public class ReportService {
                         .changeRateLabel(changeRateLabel)
                         .monthlyAmounts(monthlyAmounts)
                         .build())
-                // TODO [보경 S05 머지 후 연동] HabitPattern 테이블에서 해당 세션의 1위 습관 패턴 조회하여 교체
                 .observationAndAction(ConsumptionReportResponse.ObservationActionDto.builder()
-                        .observedPattern("반복 소비 패턴을 분석했어요.")
-                        .recommendedAction("결제 전 장바구니와 보유 내역을 한 번 더 확인해 보세요.")
+                        .observedPattern(observedPattern)
+                        .recommendedAction(recommendedAction)
                         .build())
                 .subscriptions(ConsumptionReportResponse.SubscriptionSummaryDto.builder()
                         .items(subItems)
@@ -116,7 +172,120 @@ public class ReportService {
                 .build();
     }
 
-    private String resolveCategory(Transaction tx) {
+    private Optional<AiServiceClient.NarrateResponse> callAiNarrate(
+            Long sessionId,
+            AnalysisSession.Persona persona,
+            List<AnalysisPatternService.PatternItem> patterns,
+            long totalExpense,
+            List<ConsumptionReportResponse.CategoryRatioDto> categoryRatios,
+            List<ConsumptionReportResponse.MonthlyAmountDto> monthlyAmounts,
+            List<ConsumptionReportResponse.SubscriptionItemDto> subItems,
+            long unknownTimeCount
+    ) {
+        List<AiServiceClient.PatternPayload> patternPayloads = patterns.stream()
+                .map(p -> new AiServiceClient.PatternPayload(
+                        "pat_" + p.patternId(),
+                        p.type().toLowerCase(Locale.ROOT),
+                        Map.of("description", p.condition()),
+                        new AiServiceClient.ObservedDto(p.observedDays(), 13, "일"),
+                        p.sumKrw(),
+                        p.chainedSumKrw(),
+                        p.evidenceGrade().toLowerCase(Locale.ROOT),
+                        List.of(),
+                        List.of()
+                ))
+                .toList();
+
+        List byCategory = categoryRatios.stream()
+                .map(c -> Map.<String, Object>of(
+                        "category", aiServiceClient.toAiCategory(c.getCategory()),
+                        "sum_krw", c.getAmount(),
+                        "share", Math.round((c.getPercentage() / 100.0) * 100.0) / 100.0
+                ))
+                .toList();
+
+        List byMonth = monthlyAmounts.stream()
+                .map(m -> Map.<String, Object>of(
+                        "month", m.getMonth(),
+                        "sum_krw", m.getAmount()
+                ))
+                .toList();
+
+        AiServiceClient.SummaryPayload summaryPayload = new AiServiceClient.SummaryPayload(
+                totalExpense,
+                byCategory,
+                byMonth,
+                Map.of(
+                        "days_without_upload", 0,
+                        "transactions_without_time", unknownTimeCount,
+                        "weather_skipped", true
+                )
+        );
+
+        List<AiServiceClient.SubscriptionPayload> subPayloads = subItems.stream()
+                .map(s -> new AiServiceClient.SubscriptionPayload(
+                        s.getServiceName(),
+                        s.getMonthlyAmount(),
+                        2,
+                        Boolean.TRUE.equals(s.getIsPriceIncreased())
+                ))
+                .toList();
+
+        AiServiceClient.NarrateRequest request = new AiServiceClient.NarrateRequest(
+                "snap_" + sessionId,
+                aiServiceClient.toAiTone(persona),
+                new AiServiceClient.PeriodDto(null, null, List.of()),
+                List.of("cards", "summary", "report"),
+                patternPayloads,
+                summaryPayload,
+                subPayloads
+        );
+
+        return aiServiceClient.narrate(request);
+    }
+
+    private Map<String, String> fetchAiCategories(List<Transaction> expenses) {
+        List<AiServiceClient.ClassifyItemRequest> items = expenses.stream()
+                .map(Transaction::getStoreName)
+                .filter(Objects::nonNull)
+                .distinct()
+                .limit(100)
+                .map(merchant -> new AiServiceClient.ClassifyItemRequest(merchant, "expense", null))
+                .toList();
+
+        return aiServiceClient.classify(items)
+                .map(res -> {
+                    Map<String, String> map = new HashMap<>();
+                    if (res.items() != null) {
+                        for (AiServiceClient.ClassifyItemResult item : res.items()) {
+                            if (item.merchant() != null && item.category() != null && !"low".equals(item.confidence())) {
+                                map.put(item.merchant(), mapAiCategoryToKorean(item.category(), item.subcategory()));
+                            }
+                        }
+                    }
+                    return map;
+                })
+                .orElse(Map.of());
+    }
+
+    private String mapAiCategoryToKorean(String category, String subcategory) {
+        if ("구독".equals(subcategory)) return "구독";
+        return switch (category) {
+            case "delivery" -> "배달";
+            case "cafe" -> "카페";
+            case "shopping" -> "쇼핑";
+            case "transport" -> "택시";
+            case "food" -> "외식";
+            case "living" -> "생활";
+            default -> "기타";
+        };
+    }
+
+    private String resolveCategory(Transaction tx, Map<String, String> aiCategoryByMerchant) {
+        if (tx.getStoreName() != null && aiCategoryByMerchant.containsKey(tx.getStoreName())) {
+            return aiCategoryByMerchant.get(tx.getStoreName());
+        }
+
         String kind = tx.getKind();
         if (kind != null && !kind.isBlank()
                 && !kind.equalsIgnoreCase("expense")
@@ -145,17 +314,26 @@ public class ReportService {
         return "기타";
     }
 
-    private String extractMonthLabel(String date) {
-        if (date == null || date.isBlank()) return "기타";
-        if (date.contains("-") && date.length() >= 7) {
-            int month = Integer.parseInt(date.substring(5, 7));
-            return month + "월";
+    private String extractSortableMonthKey(String date) {
+        if (date == null || date.isBlank()) return "9999-99";
+        String normalized = date.trim().replace('.', '-').replace('/', '-');
+        String[] parts = normalized.split("-");
+        if (parts.length >= 2) {
+            try {
+                int year = Integer.parseInt(parts[0]);
+                int month = Integer.parseInt(parts[1]);
+                return String.format("%04d-%02d", year, month);
+            } catch (NumberFormatException ignored) {
+                return "9999-99";
+            }
         }
-        if (date.contains(".") && date.length() >= 7) {
-            int month = Integer.parseInt(date.substring(5, 7));
-            return month + "월";
-        }
-        return "기타";
+        return "9999-99";
+    }
+
+    private String formatDisplayMonth(String sortableKey) {
+        if ("9999-99".equals(sortableKey) || !sortableKey.contains("-")) return "기타";
+        int month = Integer.parseInt(sortableKey.split("-")[1]);
+        return month + "월";
     }
 
     private String calculateChangeRateLabel(List<ConsumptionReportResponse.MonthlyAmountDto> list) {

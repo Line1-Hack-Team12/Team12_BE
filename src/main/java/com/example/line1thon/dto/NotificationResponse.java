@@ -10,7 +10,6 @@ import java.util.List;
 public class NotificationResponse {
     private Long sessionId;
     private List<NotificationRuleDto> notifications;
-    private String policyFooter;
 
     @Getter
     @Builder
