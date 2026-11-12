@@ -4,12 +4,14 @@ spring:
       max-file-size: 20MB
       max-request-size: 100MB
   datasource:
-    url: ${DB_URL}
-    username: ${DB_USERNAME}
-    password: ${DB_PASSWORD}
-    driver-class-name: com.mysql.cj.jdbc.Driver
+    datasource:
+      url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/line1thon?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=UTF-8}
+      username: ${SPRING_DATASOURCE_USERNAME:root}
+      password: ${SPRING_DATASOURCE_PASSWORD:4601}
+      driver-class-name: com.mysql.cj.jdbc.Driver
 
     jpa:
+      database-platform: org.hibernate.dialect.MySQLDialect
       hibernate:
         ddl-auto: update
       properties:
