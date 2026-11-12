@@ -80,4 +80,19 @@ public class Transaction {
         return ("expense".equals(this.kind) && "out".equals(this.direction))
                 || ("transfer".equals(this.kind) && "out".equals(this.direction));
     }
+    public void updateDetails(String date, String time, String storeName, Long amount, boolean isExcluded) {
+        if (date != null) {
+            this.date = date;
+        }
+        if (time != null) {
+            this.time = time;
+        }
+        if (storeName != null) {
+            this.storeName = storeName;
+        }
+        if (amount != null) {
+            this.amount = amount;
+        }
+        this.isExcluded = isExcluded;
+    }
 }
