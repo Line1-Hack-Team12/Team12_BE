@@ -384,7 +384,74 @@ public class AnalysisSessionService {
                 .guideMessage("완료되면 결과 홈으로 이동해요. 숫자 요약은 먼저 보여드리고, 문장은 준비되는 대로 채워요.")
                 .build();
     }
+    // E03: 기존 세션에 '달 추가하기'로 새 캡처 파일 누적 업로드 및 AI 추출
+    @Transactional
+    public void appendFilesToSession(Long sessionId, List slotMonths, List files) {
+        AnalysisSession session = findSession(sessionId);
+        if (files == null || files.isEmpty()) {
+            throw new IllegalArgumentException("추가할 파일이 없습니다.");
+        }
 
+        session.updateStatus(AnalysisSession.SessionStatus.EXTRACTING);
+
+        List newUploadedFiles = new ArrayList<>();
+        for (int i = 0; i < files.size(); i++) {
+            MultipartFile file = (MultipartFile) files.get(i);
+            String slotMonth = (slotMonths != null && i < slotMonths.size())
+                    ? (String) slotMonths.get(i)
+                    : session.getLastMonth();
+
+            UploadedFile uploadedFile = UploadedFile.builder()
+                    .session(session)
+                    .slotMonth(slotMonth)
+                    .originalFileName(file.getOriginalFilename())
+                    .build();
+            newUploadedFiles.add(fileRepository.save(uploadedFile));
+        }
+
+        // 기존 거래 내역은 유지한 채 새로 추가된 파일들만 AI 추출 실행
+        callAiExtraction(session, newUploadedFiles, files);
+    }
+
+    // E04: 실패한 파일만 다시 시도 (또는 캡처 교체) - 기존 성공 거래는 그대로 유지
+    @Transactional
+    public void retryOrReplaceFailedFiles(Long sessionId, List fileIds, List files) {
+        AnalysisSession session = findSession(sessionId);
+        List failedFiles = fileRepository.findBySessionAndStatus(session, UploadedFile.ProcessStatus.FAILED);
+
+        if (failedFiles.isEmpty()) {
+            session.updateStatus(AnalysisSession.SessionStatus.REVIEWING);
+            return;
+        }
+
+        if (files == null || files.isEmpty()) {
+            throw new IllegalArgumentException("다시 시도할 캡처 파일을 첨부해 주세요.");
+        }
+
+        session.updateStatus(AnalysisSession.SessionStatus.EXTRACTING);
+
+        List targetUploadedFiles = new ArrayList<>();
+        for (int i = 0; i < files.size(); i++) {
+            MultipartFile newFile = (MultipartFile) files.get(i);
+            UploadedFile targetUf;
+
+            if (fileIds != null && i < fileIds.size()) {
+                Long targetId = Long.valueOf(String.valueOf(fileIds.get(i)));
+                targetUf = fileRepository.findById(targetId)
+                        .orElseThrow(() -> new IllegalArgumentException("파일을 찾을 수 없습니다. id=" + targetId));
+            } else if (i < failedFiles.size()) {
+                targetUf = (UploadedFile) failedFiles.get(i);
+            } else {
+                break;
+            }
+
+            // 기존 실패 레코드의 파일명 갱신 후 재추출 대상에 추가 (중복 거래 방지)
+            targetUf.replaceFile(newFile.getOriginalFilename());
+            targetUploadedFiles.add(targetUf);
+        }
+
+        callAiExtraction(session, targetUploadedFiles, files);
+    }
     public AnalysisSession findSession(Long sessionId) {
         return sessionRepository.findById(sessionId)
                 .orElseThrow(() -> new IllegalArgumentException("세션을 찾을 수 없습니다. id=" + sessionId));
