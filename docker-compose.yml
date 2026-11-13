@@ -20,6 +20,26 @@ services:
       timeout: 5s
       retries: 10
 
+  # AI 서비스 (FastAPI). 이미지는 Team12_consume 레포의 Actions 가 Docker Hub 에 올린다.
+  # 포트는 compose 네트워크 안에서만 열고, Spring 만 http://ai:8001 로 부른다.
+  ai:
+    image: ${DOCKERHUB_USERNAME}/line1thon-ai:latest
+    container_name: line1thon-ai
+    restart: always
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      F03_MODEL: ${F03_MODEL:-claude-sonnet-5-5}
+      AI_MAX_CONCURRENT_CALLS: ${AI_MAX_CONCURRENT_CALLS:-8}
+      TZ: Asia/Seoul
+    expose:
+      - "8001"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8001/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
   backend:
     image: ${DOCKERHUB_USERNAME}/line1thon-be:latest
     container_name: line1thon-be
@@ -27,13 +47,16 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      # AI 가 늦게 뜨거나 키가 없어도 백엔드는 뜬다 (AI 호출 실패 시 템플릿 문구로 대체)
+      ai:
+        condition: service_started
     ports:
       - "8080:8080"
     environment:
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/${DB_NAME}?useSSL=false&serverTimezone=Asia/Seoul&characterEncoding=UTF-8&allowPublicKeyRetrieval=true
       SPRING_DATASOURCE_USERNAME: root
       SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
-      AI_SERVER_URL: ${AI_SERVER_URL}
+      AI_SERVER_URL: http://ai:8001
 
 volumes:
   mysql-data:

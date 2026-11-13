@@ -237,6 +237,7 @@ public class NotificationAndSummaryService {
 
         AnalysisPatternService.PatternItem top = patterns.get(0);
 
+        // 사용자가 고른 원인 태그. AI 쪽 허용값은 overtime, rain, stress, habit, no_specific_reason (+ unknown, not_applicable, skipped, custom)
         List<String> causeTags = patternResponseRepository.findByAnalysisId(session.getId()).stream()
                 .filter(r -> "ANSWERED".equals(r.getResponseStatus()))
                 .flatMap(r -> r.getCauseTags().stream())
@@ -244,11 +245,12 @@ public class NotificationAndSummaryService {
                 .distinct()
                 .toList();
 
+        // /notify-copy 는 근거 거래를 읽지 않으므로 빈 목록. 조건·관찰 횟수는 탐지 결과의 구조화 값 그대로
         AiServiceClient.PatternPayload patternPayload = new AiServiceClient.PatternPayload(
                 "pat_" + top.patternId(),
-                mapPatternType(top.type()),
-                buildAiConditionMap(top),
-                new AiServiceClient.ObservedDto(top.observedDays(), 13, "주"),
+                AiPayloadMapper.toAiPatternType(top.type()),
+                top.aiCondition(),
+                new AiServiceClient.ObservedDto(top.observedDays(), top.observedWindow(), top.observedUnit()),
                 top.sumKrw(),
                 top.chainedSumKrw(),
                 top.evidenceGrade().toLowerCase(Locale.ROOT),
@@ -292,55 +294,6 @@ public class NotificationAndSummaryService {
             );
         }
         return safeCategory + " 지출을 고민한다면 장바구니와 보유 내역부터 먼저 확인해 보세요.";
-    }
-
-    private Map<String, Object> buildAiConditionMap(AnalysisPatternService.PatternItem top) {
-        Map<String, Object> map = new HashMap<>();
-        String cond = top.condition() != null ? top.condition() : "";
-
-        Integer weekday = extractWeekdayNumber(cond);
-        if (weekday != null) {
-            map.put("weekday", weekday);
-        }
-        if (cond.contains("밤 9시 이후")) {
-            map.put("hour_from", 21);
-            map.put("hour_to", 24);
-        } else if (cond.contains("오전") || cond.contains("카페")) {
-            map.put("hour_from", 7);
-            map.put("hour_to", 11);
-        }
-
-        String koreanCat = "기타";
-        for (String cat : List.of("배달", "카페", "택시", "구독", "쇼핑", "외식")) {
-            if (cond.contains(cat)) {
-                koreanCat = cat;
-                break;
-            }
-        }
-        map.put("category", aiServiceClient.toAiCategory(koreanCat));
-        return map;
-    }
-
-    private String mapPatternType(String rawType) {
-        if (rawType == null) return "weekday";
-        return switch (rawType.toUpperCase(Locale.ROOT)) {
-            case "WEEKDAY" -> "weekday";
-            case "LATE_NIGHT" -> "late_night";
-            case "CHAIN" -> "chain";
-            case "RAIN" -> "rain";
-            default -> rawType.toLowerCase(Locale.ROOT);
-        };
-    }
-
-    private Integer extractWeekdayNumber(String condition) {
-        if (condition.contains("월요일")) return 1;
-        if (condition.contains("화요일")) return 2;
-        if (condition.contains("수요일")) return 3;
-        if (condition.contains("목요일")) return 4;
-        if (condition.contains("금요일")) return 5;
-        if (condition.contains("토요일")) return 6;
-        if (condition.contains("일요일")) return 7;
-        return null;
     }
 
     private PatternSchedule resolveScheduleFromPattern(AnalysisPatternService.PatternItem topPattern, String reasonTag) {

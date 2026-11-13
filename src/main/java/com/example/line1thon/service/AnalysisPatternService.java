@@ -12,11 +12,18 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.nio.charset.StandardCharsets;
+import java.time.DayOfWeek;
+import java.time.LocalDate;
 import java.time.format.TextStyle;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -24,8 +31,19 @@ import java.util.UUID;
 @Transactional(readOnly = true)
 public class AnalysisPatternService {
 
+    // AI /classify 의 세부 분류를 그대로 라벨로 쓰는 것들 (AI 요청의 condition.subcategory 로 되돌려 보낸다)
+    private static final Set<String> SUBCATEGORY_LABELS = Set.of(
+            "주점", "택시", "구독", "편의점", "주거·통신", "의료", "여가", "차량");
+
+    /** 송금·저금·간편결제 충전 라벨. 총지출 합계에는 포함하되 패턴 탐지와 보고서 비중에서는 뺀다. */
+    public static final String TRANSFER_LABEL = "이체";
+
+    /** S05 카드 최대 개수. AI /narrate 가 받는 패턴 수(10) 와 같아서 모든 카드가 AI 문장이 된다. */
+    public static final int MAX_PATTERNS = 10;
+
     private final AnalysisSessionRepository sessionRepository;
     private final TransactionRepository transactionRepository;
+    private final AiServiceClient aiServiceClient;
 
     public AnalysisData analyze(Long analysisId) {
 
@@ -45,19 +63,28 @@ public class AnalysisPatternService {
                         && t.getAmount() > 0)
                 .toList();
 
-        // 3. F08 탐지 엔진의 입력 형태로 변환
+        // 3. F08 탐지 엔진의 입력 형태로 변환. 분류는 추출 직후 저장된 AI 결과를 쓰고, 없으면 키워드로 대체.
+        //    이체(송금·저금·충전) 는 습관이 아니므로 탐지 입력에서 뺀다 (총지출 합계에는 남는다).
         List<AnalysisTransaction> inputs = expenses.stream()
+                .filter(t -> !isTransfer(t))
                 .map(t -> new AnalysisTransaction(
                         t.getId(),
                         parseDate(t.getDate()),
                         parseTime(t.getTime()),
                         t.getStoreName(),
                         t.getAmount(),
-                        resolveCategory(t.getStoreName()),
+                        categoryLabel(t),
                         null,
                         t.getDirection()
                 ))
                 .toList();
+
+        // 관찰 창(window) 계산용 날짜 범위
+        LocalDate minDate = inputs.stream().map(AnalysisTransaction::date).filter(Objects::nonNull)
+                .min(Comparator.naturalOrder()).orElse(null);
+        LocalDate maxDate = inputs.stream().map(AnalysisTransaction::date).filter(Objects::nonNull)
+                .max(Comparator.naturalOrder()).orElse(null);
+        int dayWindow = (minDate == null) ? 0 : (int) ChronoUnit.DAYS.between(minDate, maxDate) + 1;
 
 
         // 4. 요일 및 심야 소비 패턴 탐지
@@ -74,6 +101,10 @@ public class AnalysisPatternService {
         for (var p : detected) {
 
             String condition;
+            Map<String, Object> aiCondition = new HashMap<>();
+            putCategory(aiCondition, p.category());
+            int window;
+            String unit;
 
             if (p.dayOfWeek() != null) {
                 String day = p.dayOfWeek().getDisplayName(
@@ -81,8 +112,15 @@ public class AnalysisPatternService {
                 );
 
                 condition = day + " " + p.category() + " 소비";
+                aiCondition.put("weekday", p.dayOfWeek().getValue() - 1);   // AI 쪽은 월요일=0
+                window = countWeekday(minDate, maxDate, p.dayOfWeek());
+                unit = "주";
             } else {
                 condition = "밤 9시 이후 " + p.category() + " 소비";
+                aiCondition.put("hour_from", 21);
+                aiCondition.put("hour_to", 24);
+                window = dayWindow;
+                unit = "일";
             }
 
             String key = p.type() + "|"
@@ -97,7 +135,10 @@ public class AnalysisPatternService {
                     p.sumKrw(),
                     0L,
                     p.evidenceGrade().name(),
-                    p.evidenceTransactionIds()
+                    p.evidenceTransactionIds(),
+                    aiCondition,
+                    Math.max(window, p.observedDays()),
+                    unit
             ));
         }
 
@@ -114,6 +155,11 @@ public class AnalysisPatternService {
             String key = "CHAIN|" + p.fromCategory()
                     + "|" + p.toCategory();
 
+            Map<String, Object> aiCondition = new HashMap<>();
+            aiCondition.put("from_category", aiServiceClient.toAiCategory(p.fromCategory()));
+            aiCondition.put("to_category", aiServiceClient.toAiCategory(p.toCategory()));
+            aiCondition.put("within_minutes", 120);
+
             patterns.add(new PatternItem(
                     stableId(analysisId, key),
                     p.type().name(),
@@ -122,16 +168,22 @@ public class AnalysisPatternService {
                     p.sumKrw(),
                     p.sumKrw(),
                     p.evidenceGrade().name(),
-                    p.evidenceTransactionIds()
+                    p.evidenceTransactionIds(),
+                    aiCondition,
+                    Math.max(dayWindow, p.observedDays()),
+                    "일"
             ));
         }
 
-        // 6. 지출 금액이 큰 패턴부터 정렬
+        // 6. 지출 금액이 큰 패턴부터 정렬하고 상위 MAX_PATTERNS 개만 남긴다
         patterns.sort(
                 Comparator.comparingLong(PatternItem::sumKrw)
                         .reversed()
                         .thenComparing(PatternItem::patternId)
         );
+        if (patterns.size() > MAX_PATTERNS) {
+            patterns = new ArrayList<>(patterns.subList(0, MAX_PATTERNS));
+        }
 
         // 7. 전체 지출 합계 계산
         long totalExpense = expenses.stream()
@@ -145,6 +197,42 @@ public class AnalysisPatternService {
                 totalExpense,
                 List.copyOf(patterns)
         );
+    }
+
+    /**
+     * 거래의 한글 분류 라벨. AI 분류가 저장돼 있으면 그것, 아니면 가맹점명 키워드.
+     * AI 분류가 없는 transfer 행(송금·저금)은 "이체" 로 둔다 (분류 실패 시 송금이 패턴에 섞이지 않도록).
+     */
+    public String categoryLabel(Transaction t) {
+        if (t.getCategory() != null && !t.getCategory().isBlank()) {
+            return aiServiceClient.toKoreanCategory(t.getCategory(), t.getSubcategory());
+        }
+        if ("transfer".equals(t.getKind())) {
+            return TRANSFER_LABEL;
+        }
+        return resolveCategory(t.getStoreName());
+    }
+
+    /** 송금·저금·충전 행인가. 패턴 탐지와 보고서 비중에서 제외한다. */
+    public boolean isTransfer(Transaction t) {
+        return TRANSFER_LABEL.equals(categoryLabel(t));
+    }
+
+    private void putCategory(Map<String, Object> cond, String label) {
+        cond.put("category", aiServiceClient.toAiCategory(label));
+        if (label != null && SUBCATEGORY_LABELS.contains(label)) {
+            cond.put("subcategory", label);
+        }
+    }
+
+    /** 날짜 범위 안에 해당 요일이 몇 번 있는지 ("13주 중 6회" 의 13). */
+    private static int countWeekday(LocalDate from, LocalDate to, DayOfWeek dow) {
+        if (from == null || to == null) return 0;
+        int n = 0;
+        for (LocalDate d = from; !d.isAfter(to); d = d.plusDays(1)) {
+            if (d.getDayOfWeek() == dow) n++;
+        }
+        return n;
     }
 
     // 문자열 날짜를 LocalDate로 변환
@@ -195,7 +283,7 @@ public class AnalysisPatternService {
         }
     }
 
-    // 가맹점 이름으로 소비 카테고리 분류
+    // 가맹점 이름으로 소비 카테고리 분류 (AI 분류가 없을 때의 대체)
     private String resolveCategory(String merchant) {
         String name = merchant == null
                 ? ""
@@ -264,6 +352,11 @@ public class AnalysisPatternService {
             List<PatternItem> patterns
     ) {}
 
+    /**
+     * 탐지된 패턴 하나.
+     * aiCondition / observedWindow / observedUnit 은 AI /narrate, /notify-copy 요청용 구조화 값이다
+     * (예: {weekday: 5, category: "other", subcategory: "여가"}, 13, "주" -> "13주 중 6회").
+     */
     public record PatternItem(
             Long patternId,
             String type,
@@ -272,6 +365,9 @@ public class AnalysisPatternService {
             long sumKrw,
             long chainedSumKrw,
             String evidenceGrade,
-            List<Long> evidenceTransactionIds
+            List<Long> evidenceTransactionIds,
+            Map<String, Object> aiCondition,
+            int observedWindow,
+            String observedUnit
     ) {}
 }

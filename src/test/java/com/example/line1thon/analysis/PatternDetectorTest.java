@@ -56,6 +56,26 @@ class PatternDetectorTest {
     }
 
     @Test
+    void 서로_다른_날_2일은_반복_패턴이_아니다() {
+
+        List<AnalysisTransaction> transactions = List.of(
+                new AnalysisTransaction(
+                        1L, LocalDate.of(2026, 10, 1),
+                        LocalTime.of(22, 0),
+                        "배민", 20000, "delivery", null, "out"),
+                new AnalysisTransaction(
+                        2L, LocalDate.of(2026, 10, 8),
+                        LocalTime.of(21, 30),
+                        "쿠팡이츠", 15000, "delivery", null, "out")
+        );
+
+        var results = new PatternDetector().detectWeekdayPatterns(transactions);
+
+        // 최소 관찰 일수(3일) 미만이면 패턴으로 보지 않는다
+        assertTrue(results.isEmpty());
+    }
+
+    @Test
     void 같은_날짜_결제는_반복_패턴이_아니다() {
 
         List<AnalysisTransaction> transactions = List.of(
@@ -92,6 +112,11 @@ class PatternDetectorTest {
                         LocalTime.of(21, 30),
                         "쿠팡이츠", 15000, "delivery", null, "out"),
 
+                new AnalysisTransaction(
+                        4L, LocalDate.of(2026, 10, 7),
+                        LocalTime.of(23, 10),
+                        "요기요", 12000, "delivery", null, "out"),
+
                 // 밤 9시 이전 소비: 탐지에서 제외돼야 함
                 new AnalysisTransaction(
                         3L, LocalDate.of(2026, 10, 5),
@@ -109,9 +134,9 @@ class PatternDetectorTest {
 
         assertEquals(PatternType.LATE_NIGHT, pattern.type());
         assertEquals("delivery", pattern.category());
-        assertEquals(2, pattern.observedDays());
-        assertEquals(35000L, pattern.sumKrw());
-        assertEquals(List.of(1L, 2L),
+        assertEquals(3, pattern.observedDays());
+        assertEquals(47000L, pattern.sumKrw());
+        assertEquals(List.of(1L, 2L, 4L),
                 pattern.evidenceTransactionIds());
     }
 

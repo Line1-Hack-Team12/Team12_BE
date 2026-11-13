@@ -36,7 +36,18 @@ class ChainPatternDetectorTest {
                 new AnalysisTransaction(
                         4L, LocalDate.of(2026, 10, 8),
                         LocalTime.of(14, 30),
-                        "잡화점", 15000, "shopping", null, "out")
+                        "잡화점", 15000, "shopping", null, "out"),
+
+                // 10월 15일: 카페 → 45분 뒤 쇼핑
+                new AnalysisTransaction(
+                        5L, LocalDate.of(2026, 10, 15),
+                        LocalTime.of(12, 0),
+                        "투썸", 4500, "cafe", null, "out"),
+
+                new AnalysisTransaction(
+                        6L, LocalDate.of(2026, 10, 15),
+                        LocalTime.of(12, 45),
+                        "다이소", 8000, "shopping", null, "out")
         );
 
         // 2. 연쇄 소비 탐지 실행
@@ -53,13 +64,41 @@ class ChainPatternDetectorTest {
         assertEquals(PatternType.CHAIN, pattern.type());
         assertEquals("cafe", pattern.fromCategory());
         assertEquals("shopping", pattern.toCategory());
-        assertEquals(2, pattern.observedDays());
-        assertEquals(46000L, pattern.sumKrw());
+        assertEquals(3, pattern.observedDays());
+        assertEquals(58500L, pattern.sumKrw());
 
         assertEquals(
-                Set.of(1L, 2L, 3L, 4L),
+                Set.of(1L, 2L, 3L, 4L, 5L, 6L),
                 Set.copyOf(pattern.evidenceTransactionIds())
         );
+    }
+
+    @Test
+    void 서로_다른_날_2일만_이어지면_패턴이_아니다() {
+
+        List<AnalysisTransaction> transactions = List.of(
+                new AnalysisTransaction(
+                        1L, LocalDate.of(2026, 10, 1),
+                        LocalTime.of(14, 0),
+                        "스타벅스", 5000, "cafe", null, "out"),
+                new AnalysisTransaction(
+                        2L, LocalDate.of(2026, 10, 1),
+                        LocalTime.of(15, 0),
+                        "옷가게", 20000, "shopping", null, "out"),
+                new AnalysisTransaction(
+                        3L, LocalDate.of(2026, 10, 8),
+                        LocalTime.of(13, 0),
+                        "메가커피", 6000, "cafe", null, "out"),
+                new AnalysisTransaction(
+                        4L, LocalDate.of(2026, 10, 8),
+                        LocalTime.of(14, 30),
+                        "잡화점", 15000, "shopping", null, "out")
+        );
+
+        var results = new ChainPatternDetector().detectChainPatterns(transactions);
+
+        // 최소 관찰 일수(3일) 미만이면 패턴으로 보지 않는다
+        assertTrue(results.isEmpty());
     }
 
     @Test

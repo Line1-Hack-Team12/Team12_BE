@@ -39,6 +39,9 @@ public class F03ExtractResponse {
 
         private String status; // succeeded, skipped, failed
 
+        @JsonProperty("slot_month")
+        private String slotMonth; // /parse 응답에서만: 이 자산(달)의 YYYY-MM
+
         @JsonProperty("app_guess")
         private String appGuess;
 
