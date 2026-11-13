@@ -95,7 +95,8 @@ public class AiServiceClient {
 
     /**
      * AI /classify 결과 -> 백엔드 한글 분류 라벨. 패턴 탐지와 보고서가 이 라벨로 묶는다.
-     * 세부 분류가 있으면 그 쪽을 쓴다 (주점, 택시, 구독, 편의점, 여가, 차량).
+     * 세부 분류가 있으면 그 쪽을 쓴다 (주점, 택시, 구독, 편의점, 여가, 차량, 이체).
+     * "이체"(송금·저금·간편결제 충전) 는 총지출에는 들어가지만 패턴 탐지와 보고서 비중에서는 뺀다.
      */
     public String toKoreanCategory(String category, String subcategory) {
         if (category == null) return "기타";
@@ -114,6 +115,7 @@ public class AiServiceClient {
                 default -> "생활";
             };
             default -> switch (sub) {
+                case "이체" -> AnalysisPatternService.TRANSFER_LABEL;
                 case "여가" -> "여가";
                 case "차량" -> "차량";
                 default -> "기타";

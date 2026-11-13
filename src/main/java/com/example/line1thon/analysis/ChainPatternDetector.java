@@ -102,7 +102,7 @@ public class ChainPatternDetector {
                     .distinct()
                     .count();
 
-            if (observedDays < 2) {
+            if (observedDays < PatternDetector.MIN_OBSERVED_DAYS) {
                 continue;
             }
 

@@ -10,6 +10,9 @@ import java.time.LocalTime;
 
 public class PatternDetector {
 
+    /** 패턴으로 인정하는 최소 관찰 일수(서로 다른 날짜). 2일은 우연일 수 있어 3일부터. */
+    public static final int MIN_OBSERVED_DAYS = 3;
+
     // F08: 특정 요일에 반복되는 소비 패턴 탐지
     public List<DetectedPattern> detectWeekdayPatterns(
             List<AnalysisTransaction> transactions) {
@@ -40,7 +43,7 @@ public class PatternDetector {
 
         List<DetectedPattern> results = new ArrayList<>();
 
-        // 2. 서로 다른 날짜에서 2일 이상 관찰됐는지 확인
+        // 2. 서로 다른 날짜에서 MIN_OBSERVED_DAYS 일 이상 관찰됐는지 확인
         for (var entry : groups.entrySet()) {
             List<AnalysisTransaction> group = entry.getValue();
 
@@ -49,7 +52,7 @@ public class PatternDetector {
                     .distinct()
                     .count();
 
-            if (observedDays < 2) {
+            if (observedDays < MIN_OBSERVED_DAYS) {
                 continue;
             }
 
@@ -115,7 +118,7 @@ public class PatternDetector {
 
         List<DetectedPattern> results = new ArrayList<>();
 
-        // 2. 서로 다른 날짜에 2일 이상 소비했는지 확인
+        // 2. 서로 다른 날짜에 MIN_OBSERVED_DAYS 일 이상 소비했는지 확인
         for (var entry : groups.entrySet()) {
             List<AnalysisTransaction> group = entry.getValue();
 
@@ -124,7 +127,7 @@ public class PatternDetector {
                     .distinct()
                     .count();
 
-            if (observedDays < 2) {
+            if (observedDays < MIN_OBSERVED_DAYS) {
                 continue;
             }
 

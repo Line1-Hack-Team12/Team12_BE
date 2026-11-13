@@ -33,17 +33,20 @@ public class ReportService {
 
         long totalExpense = expenses.stream().mapToLong(Transaction::getAmount).sum();
 
-        // 1. 카테고리별 비중 계산 (추출 직후 저장된 AI /classify 결과 기준, 없으면 키워드 분류)
+        // 1. 카테고리별 비중 계산 (추출 직후 저장된 AI /classify 결과 기준, 없으면 키워드 분류).
+        //    이체(송금·저금·충전) 는 비중에서 뺀다. 총지출(totalExpense) 과 월별 추이에는 그대로 들어간다.
         Map<String, Long> categoryMap = expenses.stream()
+                .filter(tx -> !analysisPatternService.isTransfer(tx))
                 .collect(Collectors.groupingBy(
                         analysisPatternService::categoryLabel,
                         Collectors.summingLong(Transaction::getAmount)
                 ));
+        long ratioBase = categoryMap.values().stream().mapToLong(Long::longValue).sum();
 
         List<ConsumptionReportResponse.CategoryRatioDto> categoryRatios = categoryMap.entrySet().stream()
                 .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
                 .map(entry -> {
-                    int pct = totalExpense == 0 ? 0 : (int) Math.round((double) entry.getValue() * 100 / totalExpense);
+                    int pct = ratioBase == 0 ? 0 : (int) Math.round((double) entry.getValue() * 100 / ratioBase);
                     return ConsumptionReportResponse.CategoryRatioDto.builder()
                             .category(entry.getKey())
                             .amount(entry.getValue())

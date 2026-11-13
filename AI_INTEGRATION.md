@@ -12,6 +12,8 @@ AI 파트(FastAPI, Team12_consume 레포 `backend/`) 와 Spring 백엔드를 실
 | 패턴 설명 `/narrate` | 존재하지 않는 `/narratives/generate` 호출 → 항상 템플릿 | `AiNarrativeService` 가 `/narrate` 를 부르고 세션·말투·패턴 스냅샷 단위로 캐시. S05 카드, S05-1 상세, S07 보고서가 같은 결과를 쓴다 |
 | 알림 문구 `/notify-copy` | 연결됨 (관찰 창 13 고정) | 탐지 결과의 실제 관찰 창·조건을 보낸다 |
 | 충전 되돌림 규칙 | 없음 | 그 달에 간편결제 결제 행이 없으면 충전 행을 `expense` 로 되돌림 (`charge_as_expense` 플래그) |
+| 이체 처리 | 송금·저금(`transfer+out`) 이 패턴·비중에 포함 | 총지출 합계에는 남기고 패턴 탐지와 보고서 비중에서는 제외 |
+| 패턴 수 | 2일 이상 관찰이면 전부 (실데이터 43개) | 3일 이상 관찰, 금액순 상위 10개 (AI 문장 상한과 같음) |
 | compose | `ai` 서비스 없음 | `ai` 서비스 추가, `AI_SERVER_URL=http://ai:8001` |
 | 실패 로그 | debug | warn + 응답 본문 (422 의 `errors` 가 보인다) |
 
@@ -49,6 +51,7 @@ docker build -t line1thon-ai ./backend && docker run --rm --env-file backend/.en
   - 선택 파라미터 `ownerName` (본인 이름, 캡처 치환용), `filePassword` (xlsx 열기 암호. 저장하지 않음).
   - xlsx 는 세션의 슬롯 달(`lastMonth` 에서 `monthsCount` 개 + 파일의 `slotMonths`)만 가져온다. 그 달에 거래가 없으면 파일이 FAILED 로 표시되고 사유는 "파일에 선택한 달의 거래가 없어요." 암호가 틀리면 AI 서비스의 사유(422)가 그대로 사유가 된다.
 - `GET /api/analyses/{id}/patterns/{patternId}` (S05-1): observation/hypothesisQuestion/action 이 S05 카드와 같은 AI 문장이다 (전에는 고정 문구).
+- `GET /api/analyses/{id}/result` (S05): 카드가 최대 10개다. `GET /api/sessions/{id}/report` (S07): `categoryRatios` 에 "이체" 가 없고 비중은 이체를 뺀 금액 기준이라 합이 100 이다. `totalExpense` 와 월별 추이는 이체를 포함한다.
 - 응답 형태는 바뀌지 않았다.
 
 ## 4. 코드 변경 파일
@@ -73,7 +76,11 @@ docker build -t line1thon-ai ./backend && docker run --rm --env-file backend/.en
 
 **관찰 창.** 요일 패턴은 "데이터 기간 안의 그 요일 수" 를 창으로, 단위 "주" ("13주 중 6회"). 심야·연쇄는 데이터 기간의 일수, 단위 "일". AI 는 이 숫자만 문장에 쓸 수 있다.
 
-**분류 라벨.** AI 카테고리 코드(food, delivery, cafe, shopping, transport, living, other) 와 세부 분류를 백엔드 한글 라벨로 바꾼다 (`AiServiceClient.toKoreanCategory`). 세부 분류가 있으면 그것이 라벨이다: 주점, 택시, 교통, 구독, 편의점, 주거·통신, 의료, 여가, 차량. 없으면 외식, 배달, 카페, 쇼핑, 생활, 기타. 패턴 탐지와 보고서 비중이 이 라벨로 묶인다. AI 분류가 없는 행(분류 실패)은 예전 키워드 분류로 떨어진다.
+**분류 라벨.** AI 카테고리 코드(food, delivery, cafe, shopping, transport, living, other) 와 세부 분류를 백엔드 한글 라벨로 바꾼다 (`AiServiceClient.toKoreanCategory`). 세부 분류가 있으면 그것이 라벨이다: 주점, 택시, 교통, 구독, 편의점, 주거·통신, 의료, 여가, 차량, 이체. 없으면 외식, 배달, 카페, 쇼핑, 생활, 기타. 패턴 탐지와 보고서 비중이 이 라벨로 묶인다. AI 분류가 없는 행(분류 실패)은 예전 키워드 분류로 떨어지되, `kind=transfer` 면 "이체" 로 둔다.
+
+**이체 제외.** 백엔드 원래 규칙(`Transaction.isCountedAsExpense`) 은 `transfer+out`(송금·저금) 을 지출로 센다. 실제 파일에선 이 행이 지출의 73% 라 상위 패턴이 전부 "화요일 이체" 가 됐다. 그래서 "이체" 라벨 행은 총지출 합계·월별 추이에는 남기고(통장과 숫자가 맞게), 패턴 탐지 입력과 보고서 카테고리 비중에서는 뺀다 (`AnalysisPatternService.isTransfer`).
+
+**패턴 수.** 탐지기는 서로 다른 날 3일 이상(`PatternDetector.MIN_OBSERVED_DAYS`) 관찰된 것만 패턴으로 본다 (전에는 2일). 금액순으로 정렬해 상위 10개(`MAX_PATTERNS`) 만 S05 카드로 내보낸다. `/narrate` 가 받는 패턴 상한이 10개라 모든 카드가 AI 문장이 된다.
 
 **충전 되돌림.** AI 는 "네이버페이 충전", "내 계좌 → 카카오페이" 를 본인 이동(self_transfer, 집계 제외) 으로 준다. 백엔드는 달마다 간편결제 회사(네이버파이낸셜·네이버페이·카카오페이·토스페이·페이코) 가 들어간 `expense` 행이 하나도 없으면 그 달의 충전·이동 행을 `expense` 로 바꾸고 `charge_as_expense` 플래그를 남긴다. 나중에 같은 달의 결제 행이 들어오면 다시 self_transfer 로 돌린다. 교통카드(티머니) 충전은 AI 단계에서 이미 expense 다.
 
