@@ -21,7 +21,10 @@ public class AnalysisSessionController {
 
     private final AnalysisSessionService sessionService;
 
-    @Operation(summary = "S01 세션 생성 및 영수증 캡처 다중 업로드")
+    @Operation(summary = "S01 세션 생성 및 캡처·거래내역 파일 다중 업로드",
+            description = "files 는 캡처 이미지(png/jpg) 또는 은행 앱이 내보낸 거래내역 파일(xlsx). "
+                    + "xlsx 는 AI /parse 로 읽으며 세션의 슬롯 달만 가져온다. 암호가 걸린 파일이면 filePassword 를 함께 보낸다 (저장하지 않음). "
+                    + "ownerName 은 캡처에 찍힌 본인 이름을 '본인' 으로 바꾸기 위한 값이며 선택이다.")
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ApiResponse<Long> createSessionWithFiles(
             @RequestParam Integer monthsCount,
@@ -31,10 +34,12 @@ public class AnalysisSessionController {
             @RequestParam AnalysisSession.Persona persona,
             @RequestParam Boolean aiConsent,
             @RequestParam List<String> slotMonths,
+            @RequestParam(required = false) String ownerName,
+            @RequestParam(required = false) String filePassword,
             @RequestPart(value = "files") List<MultipartFile> files
     ) {
         Long sessionId = sessionService.createSessionWithFiles(
-                monthsCount, lastMonth, region, payday, persona, aiConsent, slotMonths, files
+                monthsCount, lastMonth, region, payday, persona, aiConsent, slotMonths, files, ownerName, filePassword
         );
         return ApiResponse.ok("세션 생성 및 파일 업로드가 완료되었습니다.", sessionId);
     }
@@ -71,10 +76,12 @@ public class AnalysisSessionController {
     public ApiResponse<String> retryFailed(
             @PathVariable Long sessionId,
             @RequestParam(required = false) List<Long> fileIds,
+            @RequestParam(required = false) String ownerName,
+            @RequestParam(required = false) String filePassword,
             @RequestPart(value = "files", required = false) List<MultipartFile> files
     ) {
         if (files != null && !files.isEmpty()) {
-            sessionService.retryOrReplaceFailedFiles(sessionId, fileIds, files);
+            sessionService.retryOrReplaceFailedFiles(sessionId, fileIds, files, ownerName, filePassword);
         } else {
             sessionService.retryFailedFiles(sessionId);
         }
@@ -93,9 +100,11 @@ public class AnalysisSessionController {
     public ApiResponse<SessionDetailResponse> appendFiles(
             @PathVariable Long sessionId,
             @RequestParam(required = false) List<String> slotMonths,
+            @RequestParam(required = false) String ownerName,
+            @RequestParam(required = false) String filePassword,
             @RequestPart("files") List<MultipartFile> files
     ) {
-        sessionService.appendFilesToSession(sessionId, slotMonths, files);
+        sessionService.appendFilesToSession(sessionId, slotMonths, files, ownerName, filePassword);
         return ApiResponse.ok("추가 캡처 업로드 및 추출이 완료되었습니다.", sessionService.getSessionStatus(sessionId));
     }
 

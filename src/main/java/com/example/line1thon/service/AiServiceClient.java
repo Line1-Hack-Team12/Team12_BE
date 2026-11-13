@@ -7,11 +7,18 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+/**
+ * AI 서비스(FastAPI) 의 JSON 엔드포인트 호출. 계약은 Team12_consume 레포의 backend/F03_INTERFACE.md 6~8절.
+ *
+ * 모든 호출은 실패 시 Optional.empty() 를 돌려주고 호출자가 템플릿 문구로 대체한다.
+ * 4xx 응답 본문에는 AI 가 거른 이유(ANALYSIS_OUTPUT_INVALID 의 errors 등)가 들어 있으므로 warn 으로 남긴다.
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -19,56 +26,49 @@ public class AiServiceClient {
 
     private final RestClient aiRestClient;
 
-    // 6절. 가맹점 분류 POST /classify
+    // 6절. 가맹점 분류 POST /classify (한 번에 최대 1000개)
     public Optional<ClassifyResponse> classify(List<ClassifyItemRequest> items) {
         if (items == null || items.isEmpty()) {
             return Optional.empty();
         }
-        try {
-            ClassifyResponse response = aiRestClient.post()
-                    .uri("/classify")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(new ClassifyRequest(items))
-                    .retrieve()
-                    .body(ClassifyResponse.class);
-            return Optional.ofNullable(response);
-        } catch (RuntimeException ex) {
-            log.debug("AI /classify 미구현 또는 호출 실패 (로컬 분류기 Fallback): {}", ex.getMessage());
-            return Optional.empty();
-        }
+        return post("/classify", new ClassifyRequest(items), ClassifyResponse.class);
     }
 
-    // 7절. 설명 생성 POST /narrate
+    // 7절. 설명 생성 POST /narrate (9~11초)
     public Optional<NarrateResponse> narrate(NarrateRequest request) {
+        return post("/narrate", request, NarrateResponse.class);
+    }
+
+    // 8절. 알림 문구 생성 POST /notify-copy (2~3초)
+    public Optional<NotifyCopyResponse> notifyCopy(NotifyCopyRequest request) {
+        return post("/notify-copy", request, NotifyCopyResponse.class);
+    }
+
+    private <T> Optional<T> post(String path, Object body, Class<T> type) {
         try {
-            NarrateResponse response = aiRestClient.post()
-                    .uri("/narrate")
+            T response = aiRestClient.post()
+                    .uri(path)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(request)
+                    .body(body)
                     .retrieve()
-                    .body(NarrateResponse.class);
+                    .body(type);
             return Optional.ofNullable(response);
+        } catch (RestClientResponseException ex) {
+            // 422 ANALYSIS_OUTPUT_INVALID / 400 입력 오류: 본문에 이유가 있다
+            log.warn("AI {} 실패 status={} body={}", path, ex.getStatusCode().value(), abbreviate(ex.getResponseBodyAsString()));
+            return Optional.empty();
         } catch (RuntimeException ex) {
-            log.debug("AI /narrate 미구현 또는 호출 실패 (백엔드 템플릿 Fallback): {}", ex.getMessage());
+            log.warn("AI {} 호출 실패 (대체 문구 사용): {}", path, ex.getMessage());
             return Optional.empty();
         }
     }
 
-    // 8절. 알림 문구 생성 POST /notify-copy
-    public Optional<NotifyCopyResponse> notifyCopy(NotifyCopyRequest request) {
-        try {
-            NotifyCopyResponse response = aiRestClient.post()
-                    .uri("/notify-copy")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(request)
-                    .retrieve()
-                    .body(NotifyCopyResponse.class);
-            return Optional.ofNullable(response);
-        } catch (RuntimeException ex) {
-            log.debug("AI /notify-copy 미구현 또는 호출 실패 (백엔드 문구 Fallback): {}", ex.getMessage());
-            return Optional.empty();
-        }
+    private static String abbreviate(String s) {
+        if (s == null) return "";
+        return s.length() > 600 ? s.substring(0, 600) + "..." : s;
     }
+
+    // ===== 값 변환 =====
 
     public String toAiTone(AnalysisSession.Persona persona) {
         if (persona == null) return "coach";
@@ -79,16 +79,45 @@ public class AiServiceClient {
         };
     }
 
+    /** 백엔드가 쓰는 한글 분류 라벨 -> AI 카테고리 코드 */
     public String toAiCategory(String koreanCategory) {
         if (koreanCategory == null) return "other";
         return switch (koreanCategory) {
-            case "외식", "음식" -> "food";
+            case "외식", "음식", "주점" -> "food";
             case "배달" -> "delivery";
             case "카페" -> "cafe";
             case "쇼핑" -> "shopping";
             case "택시", "교통" -> "transport";
-            case "구독", "생활", "편의점" -> "living";
+            case "구독", "생활", "편의점", "주거·통신", "의료" -> "living";
             default -> "other";
+        };
+    }
+
+    /**
+     * AI /classify 결과 -> 백엔드 한글 분류 라벨. 패턴 탐지와 보고서가 이 라벨로 묶는다.
+     * 세부 분류가 있으면 그 쪽을 쓴다 (주점, 택시, 구독, 편의점, 여가, 차량).
+     */
+    public String toKoreanCategory(String category, String subcategory) {
+        if (category == null) return "기타";
+        String sub = subcategory == null ? "" : subcategory;
+        return switch (category) {
+            case "food" -> "주점".equals(sub) ? "주점" : "외식";
+            case "delivery" -> "배달";
+            case "cafe" -> "카페";
+            case "shopping" -> "쇼핑";
+            case "transport" -> "대중교통".equals(sub) ? "교통" : "택시";
+            case "living" -> switch (sub) {
+                case "구독" -> "구독";
+                case "편의점" -> "편의점";
+                case "주거·통신" -> "주거·통신";
+                case "의료" -> "의료";
+                default -> "생활";
+            };
+            default -> switch (sub) {
+                case "여가" -> "여가";
+                case "차량" -> "차량";
+                default -> "기타";
+            };
         };
     }
 
@@ -130,14 +159,24 @@ public class AiServiceClient {
             @JsonProperty("sum_krw") long sumKrw,
             @JsonProperty("chained_sum_krw") long chainedSumKrw,
             @JsonProperty("evidence_grade") String evidenceGrade,
-            @JsonProperty("evidence_transactions") List evidenceTransactions,
-            @JsonProperty("chain_transactions") List chainTransactions
+            @JsonProperty("evidence_transactions") List<EvidenceTxPayload> evidenceTransactions,
+            @JsonProperty("chain_transactions") List<EvidenceTxPayload> chainTransactions
+    ) {}
+    /** AI 가 설명에 인용할 근거 거래. 1~10건, id 중복 불가. 잔액·계좌번호·원문은 보내지 않는다. */
+    public record EvidenceTxPayload(
+            String id,
+            String date,
+            String time,
+            String merchant,
+            @JsonProperty("amount_krw") long amountKrw,
+            String category,
+            String subcategory
     ) {}
     public record ObservedDto(int hit, int window, String unit) {}
     public record SummaryPayload(
             @JsonProperty("total_spend_krw") long totalSpendKrw,
-            @JsonProperty("by_category") List byCategory,
-            @JsonProperty("by_month") List byMonth,
+            @JsonProperty("by_category") List<Map<String, Object>> byCategory,
+            @JsonProperty("by_month") List<Map<String, Object>> byMonth,
             Map<String, Object> limits
     ) {}
     public record SubscriptionPayload(
@@ -152,7 +191,8 @@ public class AiServiceClient {
             NarrateReport report,
             String model,
             @JsonProperty("prompt_version") String promptVersion,
-            String tone
+            String tone,
+            @JsonProperty("snapshot_id") String snapshotId
     ) {}
     public record NarrateCard(
             @JsonProperty("pattern_id") String patternId,
@@ -165,7 +205,7 @@ public class AiServiceClient {
     ) {}
     public record NarrateReport(
             List<String> overview,
-            List observations,
+            List<Map<String, Object>> observations,
             List<String> actions,
             @JsonProperty("limits_sentence") String limitsSentence
     ) {}
@@ -181,6 +221,8 @@ public class AiServiceClient {
             String title,
             String body,
             String notice,
+            @JsonProperty("pattern_id") String patternId,
+            String tone,
             String model,
             @JsonProperty("prompt_version") String promptVersion
     ) {}

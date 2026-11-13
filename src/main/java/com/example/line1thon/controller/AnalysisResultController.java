@@ -137,7 +137,17 @@ public class AnalysisResultController {
                 ? "SKIPPED"
                 : savedResponse.getResponseStatus();
 
-        // 5. 상세 응답 생성
+        // 5. 카드 문장은 S05 목록과 같은 캐시(AI /narrate) 에서 가져온다
+        var persona = sessionRepository.findById(analysisId)
+                .map(s -> s.getPersona())
+                .orElse(com.example.line1thon.entity.AnalysisSession.Persona.COACH);
+        var text = aiNarrativeService.generateCached(analysisId, analysis.patterns(), persona)
+                .narratives().stream()
+                .filter(n -> patternId.equals(n.patternId()))
+                .findFirst()
+                .orElse(null);
+
+        // 6. 상세 응답 생성
         var detail = new PatternDetailResponse(
                 analysisId,
                 patternId,
@@ -147,10 +157,10 @@ public class AnalysisResultController {
                 pattern.sumKrw(),
                 pattern.chainedSumKrw(),
                 pattern.evidenceGrade(),
-                pattern.condition() + "이(가) "
-                        + pattern.observedDays() + "일 관찰됐어요.",
-                "이러한 소비가 반복된 이유가 있을까요?",
-                "다음 소비에서는 지출을 한 번 점검해 보세요.",
+                text != null ? text.observation()
+                        : pattern.condition() + "이(가) " + pattern.observedDays() + "일 관찰됐어요.",
+                text != null ? text.hypothesisQuestion() : "이러한 소비가 반복된 이유가 있을까요?",
+                text != null ? text.action() : "다음 소비에서는 지출을 한 번 점검해 보세요.",
                 transactions,
                 causeTags,
                 responseStatus

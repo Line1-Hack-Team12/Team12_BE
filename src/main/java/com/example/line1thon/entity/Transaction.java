@@ -36,6 +36,11 @@ public class Transaction {
     private String kind;       // expense, income, transfer, self_transfer, refund, cancel, unknown
     private String confidence; // high, medium, low
 
+    // AI /classify 결과 (추출 직후 저장). category 는 food, delivery, cafe, shopping, transport, living, other
+    private String category;
+    private String subcategory;        // 외식, 주점, 택시, 구독, 여가, 차량 ... (없으면 null)
+    private String categoryConfidence; // high, medium, low
+
     @Column(columnDefinition = "TEXT")
     private String rawText;
 
@@ -80,6 +85,26 @@ public class Transaction {
         return ("expense".equals(this.kind) && "out".equals(this.direction))
                 || ("transfer".equals(this.kind) && "out".equals(this.direction));
     }
+    public void updateCategory(String category, String subcategory, String confidence) {
+        this.category = category;
+        this.subcategory = subcategory;
+        this.categoryConfidence = confidence;
+    }
+
+    /** 충전 되돌림 규칙 등 서비스 규칙으로 kind 를 바꿀 때. 바꾼 이유는 flags 에 남긴다. */
+    public void overrideKind(String kind, String reasonFlag) {
+        this.kind = kind;
+        if (reasonFlag != null && !this.flags.contains(reasonFlag)) {
+            this.flags.add(reasonFlag);
+        }
+    }
+
+    /** 충전 되돌림을 취소한다 (같은 달에 간편결제 결제가 나중에 들어온 경우). */
+    public void restoreSelfTransfer(String reasonFlag) {
+        this.kind = "self_transfer";
+        this.flags.remove(reasonFlag);
+    }
+
     public void updateDetails(String date, String time, String storeName, Long amount, boolean isExcluded) {
         if (date != null) {
             this.date = date;

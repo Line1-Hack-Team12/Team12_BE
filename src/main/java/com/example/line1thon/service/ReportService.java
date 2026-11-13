@@ -21,7 +21,6 @@ public class ReportService {
     private final TransactionRepository transactionRepository;
     private final AnalysisPatternService analysisPatternService;
     private final AiNarrativeService aiNarrativeService;
-    private final AiServiceClient aiServiceClient;
 
     public ConsumptionReportResponse getConsumptionReport(Long sessionId) {
         AnalysisSession session = sessionRepository.findById(sessionId)
@@ -34,12 +33,10 @@ public class ReportService {
 
         long totalExpense = expenses.stream().mapToLong(Transaction::getAmount).sum();
 
-        // 1. 카테고리별 비중 계산 (6절 /classify 응답 우선 활용, 미구현 시 로컬 분류기 Fallback)
-        Map<String, String> aiCategoryByMerchant = fetchAiCategories(expenses);
-
+        // 1. 카테고리별 비중 계산 (추출 직후 저장된 AI /classify 결과 기준, 없으면 키워드 분류)
         Map<String, Long> categoryMap = expenses.stream()
                 .collect(Collectors.groupingBy(
-                        tx -> resolveCategory(tx, aiCategoryByMerchant),
+                        analysisPatternService::categoryLabel,
                         Collectors.summingLong(Transaction::getAmount)
                 ));
 
@@ -84,7 +81,8 @@ public class ReportService {
         String changeRateLabel = calculateChangeRateLabel(monthlyAmounts);
 
         // 3. 정기결제 · 구독 감지
-        List<ConsumptionReportResponse.SubscriptionItemDto> subItems = detectSubscriptions(expenses);
+        List<SubscriptionHit> subHits = detectSubscriptions(expenses);
+        List<ConsumptionReportResponse.SubscriptionItemDto> subItems = subHits.stream().map(SubscriptionHit::dto).toList();
         long monthlySubTotal = subItems.stream().mapToLong(ConsumptionReportResponse.SubscriptionItemDto::getMonthlyAmount).sum();
 
         // 4. 시각 미상 건수 안내 문구
@@ -95,7 +93,7 @@ public class ReportService {
                 ? String.format("업로드 없는 날은 0원으로 추정하지 않아요. 시각 미상 %d건은 시간 분석에서 제외됐어요.", unknownTimeCount)
                 : "업로드 없는 날은 0원으로 추정하지 않아요.";
 
-        // 5. S05 탐지 패턴 & 7절 AI /narrate 연동 (미구현 시 기존 AiNarrativeService Fallback)
+        // 5. S05 탐지 패턴 + AI /narrate (7절). S05 카드와 같은 캐시를 쓰므로 두 번 부르지 않는다
         String observedPattern = "반복 소비 패턴을 분석했어요.";
         String recommendedAction = "결제 전 장바구니와 보유 내역을 한 번 더 확인해 보세요.";
 
@@ -107,42 +105,29 @@ public class ReportService {
                     ? session.getPersona()
                     : AnalysisSession.Persona.COACH;
 
-            Optional<AiServiceClient.NarrateResponse> narrateOpt = callAiNarrate(
-                    sessionId, persona, patterns, totalExpense, categoryRatios, monthlyAmounts, subItems, unknownTimeCount
-            );
+            List<AiServiceClient.SubscriptionPayload> subPayloads = subHits.stream()
+                    .map(s -> new AiServiceClient.SubscriptionPayload(
+                            s.dto().getServiceName(), s.dto().getMonthlyAmount(), s.observedMonths(),
+                            Boolean.TRUE.equals(s.dto().getIsPriceIncreased())))
+                    .toList();
 
-            if (narrateOpt.isPresent()) {
-                AiServiceClient.NarrateResponse nr = narrateOpt.get();
-                if (nr.summaryLine() != null && !nr.summaryLine().isBlank()) {
-                    highlightMessage = nr.summaryLine();
+            AiNarrativeService.Result narrative = aiNarrativeService.generateCached(sessionId, patterns, persona, subPayloads);
+
+            if (narrative.summaryLine() != null && !narrative.summaryLine().isBlank()) {
+                highlightMessage = narrative.summaryLine();
+            }
+            if (!narrative.narratives().isEmpty()) {
+                AiNarrativeService.Narrative top = narrative.narratives().get(0);
+                if (top.observation() != null && !top.observation().isBlank()) observedPattern = top.observation();
+                if (top.action() != null && !top.action().isBlank()) recommendedAction = top.action();
+            }
+            AiServiceClient.NarrateReport report = narrative.report();
+            if (report != null) {
+                if (report.actions() != null && !report.actions().isEmpty()) {
+                    recommendedAction = report.actions().get(0);
                 }
-                if (nr.cards() != null && !nr.cards().isEmpty()) {
-                    AiServiceClient.NarrateCard topCard = nr.cards().get(0);
-                    if (topCard.observation() != null && !topCard.observation().isBlank()) {
-                        observedPattern = topCard.observation();
-                    }
-                    if (topCard.action() != null && !topCard.action().isBlank()) {
-                        recommendedAction = topCard.action();
-                    }
-                }
-                if (nr.report() != null) {
-                    if (nr.report().actions() != null && !nr.report().actions().isEmpty()) {
-                        recommendedAction = nr.report().actions().get(0);
-                    }
-                    if (nr.report().limitsSentence() != null && !nr.report().limitsSentence().isBlank()) {
-                        noticeMessage = nr.report().limitsSentence();
-                    }
-                }
-            } else {
-                AiNarrativeService.Result narrativeResult =
-                        aiNarrativeService.generateCached(sessionId, patterns, persona);
-                if (!narrativeResult.narratives().isEmpty()) {
-                    AiNarrativeService.Narrative topNarrative = narrativeResult.narratives().get(0);
-                    observedPattern = topNarrative.observation();
-                    recommendedAction = topNarrative.action();
-                } else {
-                    AnalysisPatternService.PatternItem topPattern = patterns.get(0);
-                    observedPattern = topPattern.condition() + " 패턴이 " + topPattern.observedDays() + "일 관찰됐어요.";
+                if (report.limitsSentence() != null && !report.limitsSentence().isBlank()) {
+                    noticeMessage = report.limitsSentence();
                 }
             }
         }
@@ -170,148 +155,6 @@ public class ReportService {
                         .build())
                 .noticeMessage(noticeMessage)
                 .build();
-    }
-
-    private Optional<AiServiceClient.NarrateResponse> callAiNarrate(
-            Long sessionId,
-            AnalysisSession.Persona persona,
-            List<AnalysisPatternService.PatternItem> patterns,
-            long totalExpense,
-            List<ConsumptionReportResponse.CategoryRatioDto> categoryRatios,
-            List<ConsumptionReportResponse.MonthlyAmountDto> monthlyAmounts,
-            List<ConsumptionReportResponse.SubscriptionItemDto> subItems,
-            long unknownTimeCount
-    ) {
-        List<AiServiceClient.PatternPayload> patternPayloads = patterns.stream()
-                .map(p -> new AiServiceClient.PatternPayload(
-                        "pat_" + p.patternId(),
-                        p.type().toLowerCase(Locale.ROOT),
-                        Map.of("description", p.condition()),
-                        new AiServiceClient.ObservedDto(p.observedDays(), 13, "일"),
-                        p.sumKrw(),
-                        p.chainedSumKrw(),
-                        p.evidenceGrade().toLowerCase(Locale.ROOT),
-                        List.of(),
-                        List.of()
-                ))
-                .toList();
-
-        List byCategory = categoryRatios.stream()
-                .map(c -> Map.<String, Object>of(
-                        "category", aiServiceClient.toAiCategory(c.getCategory()),
-                        "sum_krw", c.getAmount(),
-                        "share", Math.round((c.getPercentage() / 100.0) * 100.0) / 100.0
-                ))
-                .toList();
-
-        List byMonth = monthlyAmounts.stream()
-                .map(m -> Map.<String, Object>of(
-                        "month", m.getMonth(),
-                        "sum_krw", m.getAmount()
-                ))
-                .toList();
-
-        AiServiceClient.SummaryPayload summaryPayload = new AiServiceClient.SummaryPayload(
-                totalExpense,
-                byCategory,
-                byMonth,
-                Map.of(
-                        "days_without_upload", 0,
-                        "transactions_without_time", unknownTimeCount,
-                        "weather_skipped", true
-                )
-        );
-
-        List<AiServiceClient.SubscriptionPayload> subPayloads = subItems.stream()
-                .map(s -> new AiServiceClient.SubscriptionPayload(
-                        s.getServiceName(),
-                        s.getMonthlyAmount(),
-                        2,
-                        Boolean.TRUE.equals(s.getIsPriceIncreased())
-                ))
-                .toList();
-
-        AiServiceClient.NarrateRequest request = new AiServiceClient.NarrateRequest(
-                "snap_" + sessionId,
-                aiServiceClient.toAiTone(persona),
-                new AiServiceClient.PeriodDto(null, null, List.of()),
-                List.of("cards", "summary", "report"),
-                patternPayloads,
-                summaryPayload,
-                subPayloads
-        );
-
-        return aiServiceClient.narrate(request);
-    }
-
-    private Map<String, String> fetchAiCategories(List<Transaction> expenses) {
-        List<AiServiceClient.ClassifyItemRequest> items = expenses.stream()
-                .map(Transaction::getStoreName)
-                .filter(Objects::nonNull)
-                .distinct()
-                .limit(100)
-                .map(merchant -> new AiServiceClient.ClassifyItemRequest(merchant, "expense", null))
-                .toList();
-
-        return aiServiceClient.classify(items)
-                .map(res -> {
-                    Map<String, String> map = new HashMap<>();
-                    if (res.items() != null) {
-                        for (AiServiceClient.ClassifyItemResult item : res.items()) {
-                            if (item.merchant() != null && item.category() != null && !"low".equals(item.confidence())) {
-                                map.put(item.merchant(), mapAiCategoryToKorean(item.category(), item.subcategory()));
-                            }
-                        }
-                    }
-                    return map;
-                })
-                .orElse(Map.of());
-    }
-
-    private String mapAiCategoryToKorean(String category, String subcategory) {
-        if ("구독".equals(subcategory)) return "구독";
-        return switch (category) {
-            case "delivery" -> "배달";
-            case "cafe" -> "카페";
-            case "shopping" -> "쇼핑";
-            case "transport" -> "택시";
-            case "food" -> "외식";
-            case "living" -> "생활";
-            default -> "기타";
-        };
-    }
-
-    private String resolveCategory(Transaction tx, Map<String, String> aiCategoryByMerchant) {
-        if (tx.getStoreName() != null && aiCategoryByMerchant.containsKey(tx.getStoreName())) {
-            return aiCategoryByMerchant.get(tx.getStoreName());
-        }
-
-        String kind = tx.getKind();
-        if (kind != null && !kind.isBlank()
-                && !kind.equalsIgnoreCase("expense")
-                && !kind.equalsIgnoreCase("unknown")) {
-            return kind;
-        }
-
-        String store = tx.getStoreName() != null ? tx.getStoreName().toLowerCase() : "";
-        if (store.contains("배달의민족") || store.contains("배민") || store.contains("쿠팡이츠") || store.contains("요기요")) {
-            return "배달";
-        }
-        if (store.contains("택시") || store.contains("카카오t") || store.contains("우버") || store.contains("타다")) {
-            return "택시";
-        }
-        if (store.contains("스타벅스") || store.contains("메가커피") || store.contains("투썸")
-                || store.contains("컴포즈") || store.contains("이디야") || store.contains("빽다방") || store.contains("카페")) {
-            return "카페";
-        }
-        if (store.contains("youtube") || store.contains("유튜브") || store.contains("넷플릭스")
-                || store.contains("netflix") || store.contains("멜론") || store.contains("티빙")) {
-            return "구독";
-        }
-        if (store.contains("올리브영") || store.contains("무신사") || store.contains("다이소") || store.contains("쇼핑")) {
-            return "쇼핑";
-        }
-        return "기타";
     }
 
     private String extractSortableMonthKey(String date) {
@@ -345,17 +188,21 @@ public class ReportService {
         return rate >= 0 ? "전월 대비 +" + rate + "%" : "전월 대비 " + rate + "%";
     }
 
-    private List<ConsumptionReportResponse.SubscriptionItemDto> detectSubscriptions(List<Transaction> expenses) {
+    /** 구독 감지 결과 + 관찰 개월 수 (AI /narrate 의 observed_months 로 보낸다) */
+    private record SubscriptionHit(ConsumptionReportResponse.SubscriptionItemDto dto, int observedMonths) {}
+
+    private List<SubscriptionHit> detectSubscriptions(List<Transaction> expenses) {
         List<String> subKeywords = List.of("유튜브", "youtube", "넷플릭스", "netflix", "쿠팡와우", "멜론", "스포티파이", "티빙", "디즈니", "구독", "멤버십");
         Map<String, List<Transaction>> byStore = expenses.stream()
                 .filter(tx -> tx.getStoreName() != null)
                 .collect(Collectors.groupingBy(Transaction::getStoreName));
 
-        List<ConsumptionReportResponse.SubscriptionItemDto> result = new ArrayList<>();
+        List<SubscriptionHit> result = new ArrayList<>();
         for (Map.Entry<String, List<Transaction>> entry : byStore.entrySet()) {
             String store = entry.getKey();
-            List<Transaction> txs = entry.getValue();
-            boolean matchesKeyword = subKeywords.stream().anyMatch(kw -> store.toLowerCase().contains(kw));
+            List<Transaction> txs = new ArrayList<>(entry.getValue());
+            boolean matchesKeyword = subKeywords.stream().anyMatch(kw -> store.toLowerCase().contains(kw))
+                    || "구독".equals(analysisPatternService.categoryLabel(txs.get(0)));
 
             if (matchesKeyword) {
                 txs.sort(Comparator.comparing(Transaction::getDate, Comparator.nullsLast(Comparator.naturalOrder())));
@@ -367,12 +214,19 @@ public class ReportService {
                         .map(tx -> String.format("%,d", tx.getAmount()))
                         .collect(Collectors.joining(" → "));
 
-                result.add(ConsumptionReportResponse.SubscriptionItemDto.builder()
-                        .serviceName(store)
-                        .priceHistory(history)
-                        .isPriceIncreased(increased)
-                        .monthlyAmount(lastAmt)
-                        .build());
+                int months = (int) txs.stream()
+                        .map(tx -> extractSortableMonthKey(tx.getDate()))
+                        .distinct()
+                        .count();
+
+                result.add(new SubscriptionHit(
+                        ConsumptionReportResponse.SubscriptionItemDto.builder()
+                                .serviceName(store)
+                                .priceHistory(history)
+                                .isPriceIncreased(increased)
+                                .monthlyAmount(lastAmt)
+                                .build(),
+                        Math.max(1, months)));
             }
         }
         return result;
