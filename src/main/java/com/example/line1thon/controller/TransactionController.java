@@ -4,19 +4,50 @@ import com.example.line1thon.dto.*;
 import com.example.line1thon.global.common.ApiResponse;
 import com.example.line1thon.service.TransactionService;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 
-@Tag(name = "03. Transaction Review & Edit", description = "S03 검토 큐, 전체 내역 표, 중복 확인, 내역 수정 API")
+@Tag(name = "03. Transaction Review & Edit", description = "S01 파일 업로드 및 S03 검토 큐, 내역 수정 API")
 @RestController
 @RequiredArgsConstructor
 public class TransactionController {
 
     private final TransactionService transactionService;
 
+    // ==========================================
+    // S01 API: 파일 업로드 (엑셀 + 보조 파일)
+    // ==========================================
+    @Operation(summary = "S01 거래내역 및 보조 파일 업로드", description = "엑셀 파일과 보조 파일(캡처, PDF)을 통합 업로드하고, 생성된 Session ID를 반환합니다.")
+    @PostMapping(value = "/api/transactions/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<Long> uploadTransactionFiles(
+            @Parameter(description = "엑셀 거래내역 파일 (필수)")
+            @RequestPart(value = "excelFile") MultipartFile excelFile,
+
+            @Parameter(description = "보조 파일들 (캡처 이미지, PDF 등 - 선택)")
+            @RequestPart(value = "auxFiles", required = false) List<MultipartFile> auxFiles,
+
+            @Parameter(description = "엑셀 열기 암호 (선택)")
+            @RequestParam(value = "password", required = false) String password,
+
+            @Parameter(description = "사용자 이름 (본인 계좌 이체 구분용 - 선택)")
+            @RequestParam(value = "userName", required = false) String userName
+    ) {
+        // 서비스 실행 후 생성된 세션 ID를 받아옴
+        Long newSessionId = transactionService.processUpload(excelFile, auxFiles, password, userName);
+
+        // 프론트엔드가 다음 S03 API들을 호출할 수 있도록 sessionId를 리턴
+        return ApiResponse.ok("파일 업로드 및 파싱이 완료되었습니다.", newSessionId);
+    }
+
+    // ==========================================
+    // S03 API: 기존 로직
+    // ==========================================
     @Operation(summary = "S03 [두 행을 수정 · 확인하기] 큐 상세 조회")
     @GetMapping("/api/sessions/{sessionId}/review/queue")
     public ApiResponse<List<TransactionDetailDto>> getReviewQueue(@PathVariable Long sessionId) {
