@@ -21,12 +21,6 @@ public class TransactionController {
     private final TransactionService transactionService;
 
     // ==========================================
-    // S01 API: 파일 업로드 (엑셀 + 보조 파일)
-    // ==========================================
-    @PostMapping(value = "/api/sessions", consumes = MediaType.MULTIPART_FORM_DATA_VALUE) // <-- 창현님 요청대로 주소 변경 완료!
-
-
-    // ==========================================
     // S03 API: 기존 로직
     // ==========================================
     @Operation(summary = "S03 [두 행을 수정 · 확인하기] 큐 상세 조회")
