@@ -31,6 +31,7 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true   # pull 실패(디스크 부족 등)를 성공으로 넘기지 않도록
           script: |
             cd ~/app
             docker compose pull backend
