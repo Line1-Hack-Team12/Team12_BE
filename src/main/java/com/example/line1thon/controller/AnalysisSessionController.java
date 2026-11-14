@@ -4,9 +4,7 @@ import com.example.line1thon.dto.*;
 import com.example.line1thon.entity.AnalysisSession;
 import com.example.line1thon.global.common.ApiResponse;
 import com.example.line1thon.service.AnalysisSessionService;
-import com.example.line1thon.service.TransactionService;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
@@ -22,35 +20,30 @@ import java.util.List;
 public class AnalysisSessionController {
 
     private final AnalysisSessionService sessionService;
-    private final TransactionService transactionService; // 💡 혜인님의 서비스 연결 추가
 
-    // ==========================================
-    // S01 API: 파일 업로드 (기존 로직을 혜인님 코드로 완벽 대체)
-    // ==========================================
-    @Operation(summary = "S01 세션 생성 및 거래내역 통합 업로드",
-            description = "엑셀 파일과 보조 파일(캡처, PDF)을 통합 업로드하고, 생성된 Session ID를 반환합니다.")
+    @Operation(summary = "S01 세션 생성 및 캡처·거래내역 파일 다중 업로드",
+            description = "files 는 캡처 이미지(png/jpg) 또는 은행 앱이 내보낸 거래내역 파일(xlsx). "
+                    + "xlsx 는 AI /parse 로 읽으며 세션의 슬롯 달만 가져온다. 암호가 걸린 파일이면 filePassword 를 함께 보낸다 (저장하지 않음). "
+                    + "ownerName 은 캡처에 찍힌 본인 이름을 '본인' 으로 바꾸기 위한 값이며 선택이다.")
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ApiResponse<Long> createSessionWithFiles(
-            @Parameter(description = "엑셀 거래내역 파일 (필수)")
-            @RequestPart(value = "excelFile") MultipartFile excelFile,
-
-            @Parameter(description = "보조 파일들 (캡처 이미지, PDF 등 선택)")
-            @RequestPart(value = "auxFiles", required = false) List<MultipartFile> auxFiles,
-
-            @Parameter(description = "엑셀 열기 암호 (선택)")
-            @RequestParam(value = "password", required = false) String password,
-
-            @Parameter(description = "사용자 이름 (본인 계좌 이체 구분용 선택)")
-            @RequestParam(value = "userName", required = false) String userName
+            @RequestParam Integer monthsCount,
+            @RequestParam String lastMonth,
+            @RequestParam(required = false) String region,
+            @RequestParam(required = false) Integer payday,
+            @RequestParam AnalysisSession.Persona persona,
+            @RequestParam Boolean aiConsent,
+            @RequestParam List<String> slotMonths,
+            @RequestParam(required = false) String ownerName,
+            @RequestParam(required = false) String filePassword,
+            @RequestPart(value = "files") List<MultipartFile> files
     ) {
-        // 💡 혜인님이 구현하신 업로드 및 파싱 서비스 호출
-        Long newSessionId = transactionService.processUpload(excelFile, auxFiles, password, userName);
-        return ApiResponse.ok("파일 업로드 및 파싱이 완료되었습니다.", newSessionId);
+        Long sessionId = sessionService.createSessionWithFiles(
+                monthsCount, lastMonth, region, payday, persona, aiConsent, slotMonths, files, ownerName, filePassword
+        );
+        return ApiResponse.ok("세션 생성 및 파일 업로드가 완료되었습니다.", sessionId);
     }
 
-    // ==========================================
-    // S02 / S03 API: 기존 로직들 (건드리지 않음)
-    // ==========================================
     @Operation(summary = "S02 추출 진행 및 상태 폴링", description = "진행률, 4단계 상태, 파일별 상태, 실패 목록을 반환합니다.")
     @GetMapping("/{sessionId}/status")
     public ApiResponse<SessionDetailResponse> getSessionStatus(@PathVariable Long sessionId) {
