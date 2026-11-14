@@ -24,18 +24,18 @@ public class TransactionController {
     // S01 API: 파일 업로드 (엑셀 + 보조 파일)
     // ==========================================
     @Operation(summary = "S01 거래내역 및 보조 파일 업로드", description = "엑셀 파일과 보조 파일(캡처, PDF)을 통합 업로드하고, 생성된 Session ID를 반환합니다.")
-    @PostMapping(value = "/api/transactions/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PostMapping(value = "/api/sessions", consumes = MediaType.MULTIPART_FORM_DATA_VALUE) // <-- 창현님 요청대로 주소 변경 완료!
     public ApiResponse<Long> uploadTransactionFiles(
             @Parameter(description = "엑셀 거래내역 파일 (필수)")
             @RequestPart(value = "excelFile") MultipartFile excelFile,
 
-            @Parameter(description = "보조 파일들 (캡처 이미지, PDF 등 - 선택)")
+            @Parameter(description = "보조 파일들 (캡처 이미지, PDF 등 선택)")
             @RequestPart(value = "auxFiles", required = false) List<MultipartFile> auxFiles,
 
             @Parameter(description = "엑셀 열기 암호 (선택)")
             @RequestParam(value = "password", required = false) String password,
 
-            @Parameter(description = "사용자 이름 (본인 계좌 이체 구분용 - 선택)")
+            @Parameter(description = "사용자 이름 (본인 계좌 이체 구분용 선택)")
             @RequestParam(value = "userName", required = false) String userName
     ) {
         // 서비스 실행 후 생성된 세션 ID를 받아옴
