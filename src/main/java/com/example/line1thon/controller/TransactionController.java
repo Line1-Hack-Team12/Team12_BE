@@ -23,7 +23,6 @@ public class TransactionController {
     // ==========================================
     // S01 API: 파일 업로드 (엑셀 + 보조 파일)
     // ==========================================
-    @Operation(summary = "S01 거래내역 및 보조 파일 업로드", description = "엑셀 파일과 보조 파일(캡처, PDF)을 통합 업로드하고, 생성된 Session ID를 반환합니다.")
     @PostMapping(value = "/api/sessions", consumes = MediaType.MULTIPART_FORM_DATA_VALUE) // <-- 창현님 요청대로 주소 변경 완료!
 
 
