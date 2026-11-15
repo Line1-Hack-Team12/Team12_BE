@@ -65,12 +65,41 @@ class ChainPatternDetectorTest {
         assertEquals("cafe", pattern.fromCategory());
         assertEquals("shopping", pattern.toCategory());
         assertEquals(3, pattern.observedDays());
-        assertEquals(58500L, pattern.sumKrw());
+        // 직접 비용 = 카페 3건(5000+6000+4500), 후속 비용 = 쇼핑 3건(20000+15000+8000)
+        assertEquals(15500L, pattern.sumKrw());
+        assertEquals(43000L, pattern.chainedSumKrw());
+        assertEquals(58500L, pattern.sumKrw() + pattern.chainedSumKrw());
 
         assertEquals(
                 Set.of(1L, 2L, 3L, 4L, 5L, 6L),
                 Set.copyOf(pattern.evidenceTransactionIds())
         );
+    }
+
+    @Test
+    void 같은_앞_결제에_뒤_결제가_여러_개_붙어도_직접_비용은_한_번만_더한다() {
+
+        List<AnalysisTransaction> transactions = List.of(
+                // 10월 1일: 주점 → 택시 → (30분 뒤) 택시 한 번 더
+                new AnalysisTransaction(1L, LocalDate.of(2026, 10, 1), LocalTime.of(22, 0), "포차", 40000, "bar", null, "out"),
+                new AnalysisTransaction(2L, LocalDate.of(2026, 10, 1), LocalTime.of(23, 0), "택시", 12000, "taxi", null, "out"),
+                new AnalysisTransaction(3L, LocalDate.of(2026, 10, 1), LocalTime.of(23, 30), "택시", 8000, "taxi", null, "out"),
+                // 10월 8일, 10월 15일: 주점 → 택시
+                new AnalysisTransaction(4L, LocalDate.of(2026, 10, 8), LocalTime.of(22, 0), "포차", 50000, "bar", null, "out"),
+                new AnalysisTransaction(5L, LocalDate.of(2026, 10, 8), LocalTime.of(23, 10), "택시", 15000, "taxi", null, "out"),
+                new AnalysisTransaction(6L, LocalDate.of(2026, 10, 15), LocalTime.of(22, 0), "포차", 45000, "bar", null, "out"),
+                new AnalysisTransaction(7L, LocalDate.of(2026, 10, 15), LocalTime.of(23, 20), "택시", 13000, "taxi", null, "out")
+        );
+
+        var results = new ChainPatternDetector().detectChainPatterns(transactions);
+        var bar2taxi = results.stream()
+                .filter(p -> p.fromCategory().equals("bar") && p.toCategory().equals("taxi"))
+                .findFirst().orElseThrow();
+
+        assertEquals(3, bar2taxi.observedDays());
+        assertEquals(135000L, bar2taxi.sumKrw());          // 40000 + 50000 + 45000 (1번 거래는 한 번만)
+        assertEquals(48000L, bar2taxi.chainedSumKrw());    // 12000 + 8000 + 15000 + 13000
+        assertEquals(Set.of(1L, 2L, 3L, 4L, 5L, 6L, 7L), Set.copyOf(bar2taxi.evidenceTransactionIds()));
     }
 
     @Test

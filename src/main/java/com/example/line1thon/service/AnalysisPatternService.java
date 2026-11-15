@@ -165,8 +165,8 @@ public class AnalysisPatternService {
                     p.type().name(),
                     condition,
                     p.observedDays(),
-                    p.sumKrw(),
-                    p.sumKrw(),
+                    p.sumKrw(),          // 직접 비용 (앞 결제)
+                    p.chainedSumKrw(),   // 후속 비용 (뒤 결제)
                     p.evidenceGrade().name(),
                     p.evidenceTransactionIds(),
                     aiCondition,
@@ -175,9 +175,9 @@ public class AnalysisPatternService {
             ));
         }
 
-        // 6. 지출 금액이 큰 패턴부터 정렬하고 상위 MAX_PATTERNS 개만 남긴다
+        // 6. 지출 금액(직접 + 후속)이 큰 패턴부터 정렬하고 상위 MAX_PATTERNS 개만 남긴다
         patterns.sort(
-                Comparator.comparingLong(PatternItem::sumKrw)
+                Comparator.comparingLong((PatternItem i) -> i.sumKrw() + i.chainedSumKrw())
                         .reversed()
                         .thenComparing(PatternItem::patternId)
         );

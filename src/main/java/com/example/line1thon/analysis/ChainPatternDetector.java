@@ -6,8 +6,10 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public class ChainPatternDetector {
@@ -107,22 +109,29 @@ public class ChainPatternDetector {
             }
 
             // 5. 근거 거래 ID와 지출 금액 수집
-            // 같은 거래가 여러 쌍에 포함돼도 중복 합산 방지
-            Map<Long, Long> evidence = new LinkedHashMap<>();
+            // 앞 결제(직접 비용)와 뒤 결제(후속 비용)를 따로 더한다.
+            // 같은 거래가 여러 쌍에 포함돼도 각 다리에서 한 번만 합산한다.
+            Map<Long, Long> firstLeg = new LinkedHashMap<>();
+            Map<Long, Long> secondLeg = new LinkedHashMap<>();
+            Set<Long> evidence = new LinkedHashSet<>();
 
             for (ChainPair pair : pairs) {
-                evidence.putIfAbsent(
+                firstLeg.putIfAbsent(
                         pair.first().transactionId(),
                         pair.first().amountKrw()
                 );
-
-                evidence.putIfAbsent(
+                secondLeg.putIfAbsent(
                         pair.second().transactionId(),
                         pair.second().amountKrw()
                 );
+                evidence.add(pair.first().transactionId());
+                evidence.add(pair.second().transactionId());
             }
 
-            long sumKrw = evidence.values().stream()
+            long sumKrw = firstLeg.values().stream()
+                    .mapToLong(Long::longValue)
+                    .sum();
+            long chainedSumKrw = secondLeg.values().stream()
                     .mapToLong(Long::longValue)
                     .sum();
 
@@ -132,15 +141,16 @@ public class ChainPatternDetector {
                     entry.getKey().toCategory(),
                     observedDays,
                     sumKrw,
+                    chainedSumKrw,
                     EvidenceGrade.NORMAL,
-                    new ArrayList<>(evidence.keySet())
+                    new ArrayList<>(evidence)
             ));
         }
 
-        // 6. 지출 합계가 큰 순서대로 정렬
+        // 6. 지출 합계(직접 + 후속)가 큰 순서대로 정렬
         results.sort(
                 Comparator.comparingLong(
-                        ChainPattern::sumKrw
+                        (ChainPattern p) -> p.sumKrw() + p.chainedSumKrw()
                 ).reversed()
         );
 
@@ -175,7 +185,8 @@ public class ChainPatternDetector {
             String fromCategory,
             String toCategory,
             int observedDays,
-            long sumKrw,
+            long sumKrw,            // 직접 비용: 앞 결제(fromCategory) 합계
+            long chainedSumKrw,     // 후속 비용: 뒤 결제(toCategory) 합계
             EvidenceGrade evidenceGrade,
             List<Long> evidenceTransactionIds
     ) {}
