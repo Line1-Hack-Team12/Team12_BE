@@ -1,10 +1,12 @@
 package com.example.line1thon.analysis;
 
 import java.time.DayOfWeek;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.time.LocalTime;
 
@@ -154,6 +156,78 @@ public class PatternDetector {
         }
 
         // 5. 지출 합계가 큰 순서대로 정렬
+        results.sort(
+                Comparator.comparingLong(
+                        DetectedPattern::sumKrw
+                ).reversed()
+        );
+
+        return results;
+    }
+
+    // F08: 비 온 날에 반복되는 소비 패턴 탐지 (WEATHER). rainyDays 는 세션 지역의 비 온 날짜 집합.
+    public List<DetectedPattern> detectRainPatterns(
+            List<AnalysisTransaction> transactions,
+            Set<LocalDate> rainyDays) {
+
+        if (transactions == null || transactions.isEmpty()
+                || rainyDays == null || rainyDays.isEmpty()) {
+            return List.of();
+        }
+
+        // 1. 비 온 날의 지출만 추출하고 카테고리별 분류 (시각은 없어도 된다)
+        Map<String, List<AnalysisTransaction>> groups =
+                transactions.stream()
+                        .filter(t -> t != null
+                                && t.transactionId() != null
+                                && t.date() != null
+                                && t.amountKrw() > 0
+                                && "out".equalsIgnoreCase(t.direction()))
+                        .filter(t -> rainyDays.contains(t.date()))
+                        .filter(t -> t.category() != null
+                                && !t.category().isBlank())
+                        .collect(Collectors.groupingBy(t ->
+                                t.subcategory() != null
+                                        && !t.subcategory().isBlank()
+                                        ? t.subcategory()
+                                        : t.category()
+                        ));
+
+        List<DetectedPattern> results = new ArrayList<>();
+
+        // 2. 서로 다른 비 온 날 MIN_OBSERVED_DAYS 일 이상 소비했는지 확인
+        for (var entry : groups.entrySet()) {
+            List<AnalysisTransaction> group = entry.getValue();
+
+            int observedDays = (int) group.stream()
+                    .map(AnalysisTransaction::date)
+                    .distinct()
+                    .count();
+
+            if (observedDays < MIN_OBSERVED_DAYS) {
+                continue;
+            }
+
+            long sumKrw = group.stream()
+                    .mapToLong(AnalysisTransaction::amountKrw)
+                    .sum();
+
+            List<Long> evidenceIds = group.stream()
+                    .map(AnalysisTransaction::transactionId)
+                    .distinct()
+                    .toList();
+
+            results.add(new DetectedPattern(
+                    PatternType.WEATHER,
+                    null,
+                    entry.getKey(),
+                    observedDays,
+                    sumKrw,
+                    EvidenceGrade.NORMAL,
+                    evidenceIds
+            ));
+        }
+
         results.sort(
                 Comparator.comparingLong(
                         DetectedPattern::sumKrw

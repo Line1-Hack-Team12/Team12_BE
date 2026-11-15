@@ -20,3 +20,9 @@ spring:
 ai:
   server:
     url: ${AI_SERVER_URL:http://localhost:8001}
+
+# 날씨 패턴(비 오는 날 소비): Open-Meteo 과거 날씨 API, 키 불필요. 일 강수량 1mm 이상이면 비 온 날.
+weather:
+  api:
+    url: ${WEATHER_API_URL:https://archive-api.open-meteo.com/v1/archive}
+  rain-threshold-mm: 1.0
