@@ -46,6 +46,13 @@ public class DemoNotification {
     @Column(nullable = false, columnDefinition = "TEXT")
     private String previewMessage; // 예: "야근 날 주문을 고민한다면 냉장고부터 확인해 보세요. 목요일 밤 배달이 13주 중 11회 관찰됐어요."
 
+    /** 말투가 바뀌었을 때 미리보기 문구만 새로 쓴다. 일정·조건은 그대로. */
+    public void updatePreviewMessage(String previewMessage) {
+        if (previewMessage != null && !previewMessage.isBlank()) {
+            this.previewMessage = previewMessage;
+        }
+    }
+
     public void updateSettings(String alertTime, Boolean isEnabled) {
         if (alertTime != null && !alertTime.isBlank()) {
             this.alertTime = alertTime;
