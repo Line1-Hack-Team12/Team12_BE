@@ -203,7 +203,9 @@ public class NotificationAndSummaryService {
                 .filter(r -> "ANSWERED".equals(r.getResponseStatus()))
                 .toList();
 
-        Optional<String> reasonTagOpt = resolveChosenTagLabel(answeredList);
+        // 원인 태그는 알림 대상(1위 패턴)에 단 것만 쓴다. 다른 카드에 단 태그가 이 알림에 섞이지 않도록.
+        Long topPatternId = patterns.isEmpty() ? null : patterns.get(0).patternId();
+        Optional<String> reasonTagOpt = resolveChosenTagLabel(responsesForPattern(answeredList, topPatternId));
         PatternSchedule schedule = resolveScheduleFromPattern(
                 patterns.isEmpty() ? null : patterns.get(0),
                 reasonTagOpt.orElse(null)
@@ -240,6 +242,7 @@ public class NotificationAndSummaryService {
         // 사용자가 고른 원인 태그. AI 쪽 허용값은 overtime, rain, stress, habit, no_specific_reason (+ unknown, not_applicable, skipped, custom)
         List<String> causeTags = patternResponseRepository.findByAnalysisId(session.getId()).stream()
                 .filter(r -> "ANSWERED".equals(r.getResponseStatus()))
+                .filter(r -> top.patternId().equals(r.getPatternId()))   // 알림 대상 패턴에 단 태그만
                 .flatMap(r -> r.getCauseTags().stream())
                 .filter(tag -> !"custom".equals(tag))
                 .distinct()
@@ -338,6 +341,14 @@ public class NotificationAndSummaryService {
             String triggerCriteria,
             String alertTime
     ) {}
+
+    /** 특정 패턴에 단 응답만 고른다. patternId 가 없으면 빈 목록. */
+    static List<PatternResponse> responsesForPattern(List<PatternResponse> responses, Long patternId) {
+        if (patternId == null) {
+            return List.of();
+        }
+        return responses.stream().filter(r -> patternId.equals(r.getPatternId())).toList();
+    }
 
     private Optional<String> resolveChosenTagLabel(List<PatternResponse> answeredList) {
         for (PatternResponse pr : answeredList) {
