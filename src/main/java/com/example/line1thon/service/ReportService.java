@@ -75,7 +75,8 @@ public class ReportService {
         for (int i = 0; i < sortedKeys.size(); i++) {
             String key = sortedKeys.get(i);
             monthlyAmounts.add(ConsumptionReportResponse.MonthlyAmountDto.builder()
-                    .month(formatDisplayMonth(key))
+                    // 프론트 계약은 'YYYY-MM' (화면에서 '8월' 로 바꿔 보여 준다). '8월' 로 보내면 프론트 포매터가 NaN월 을 만든다.
+                    .month(toContractMonth(key))
                     .amount(monthSortMap.get(key))
                     .isLatest(i == sortedKeys.size() - 1)
                     .build());
@@ -176,10 +177,10 @@ public class ReportService {
         return "9999-99";
     }
 
-    private String formatDisplayMonth(String sortableKey) {
+    /** 월별 추이의 month 값: 정렬 키 그대로 'YYYY-MM'. 날짜를 모르는 묶음만 '기타'. */
+    private String toContractMonth(String sortableKey) {
         if ("9999-99".equals(sortableKey) || !sortableKey.contains("-")) return "기타";
-        int month = Integer.parseInt(sortableKey.split("-")[1]);
-        return month + "월";
+        return sortableKey;
     }
 
     private String calculateChangeRateLabel(List<ConsumptionReportResponse.MonthlyAmountDto> list) {
