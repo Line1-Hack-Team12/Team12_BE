@@ -35,6 +35,7 @@ public class AiPayloadMapper {
     private final TransactionRepository transactionRepository;
     private final UploadedFileRepository uploadedFileRepository;
     private final AiServiceClient aiServiceClient;
+    private final WeatherService weatherService;
 
     /** 패턴 하나 -> PatternPayload. 근거 거래가 하나도 없으면 null (AI 요청에서 뺀다). */
     public AiServiceClient.PatternPayload toPatternPayload(AnalysisPatternService.PatternItem p,
@@ -84,7 +85,7 @@ public class AiPayloadMapper {
                 toPeriod(session, expenses),
                 want,
                 payloads,
-                toSummary(expenses),
+                toSummary(session, expenses),
                 subscriptions == null ? List.of() : subscriptions
         );
     }
@@ -106,7 +107,7 @@ public class AiPayloadMapper {
         return new AiServiceClient.PeriodDto(start, end, slots);
     }
 
-    public AiServiceClient.SummaryPayload toSummary(List<Transaction> expenses) {
+    public AiServiceClient.SummaryPayload toSummary(AnalysisSession session, List<Transaction> expenses) {
         long total = expenses.stream().mapToLong(t -> t.getAmount() == null ? 0L : t.getAmount()).sum();
 
         Map<String, Long> byCat = new LinkedHashMap<>();
@@ -144,7 +145,11 @@ public class AiPayloadMapper {
         Map<String, Object> limits = new HashMap<>();
         limits.put("days_without_upload", 0);
         limits.put("transactions_without_time", withoutTime);
-        limits.put("weather_skipped", true);
+        // AnalysisPatternService 와 같은 지역·기간 조회 (캐시) → 날씨 패턴을 탐지했으면 false
+        boolean weatherChecked = weatherService.rainyDaysFor(
+                session.getRegion(),
+                expenses.stream().map(Transaction::getDate).toList()).isPresent();
+        limits.put("weather_skipped", !weatherChecked);
 
         return new AiServiceClient.SummaryPayload(total, byCategory, byMonth, limits);
     }

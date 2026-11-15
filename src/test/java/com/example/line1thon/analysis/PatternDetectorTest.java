@@ -5,10 +5,67 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class PatternDetectorTest {
+
+    @Test
+    void 비_오는_날_택시_반복_패턴_탐지() {
+
+        Set<LocalDate> rainyDays = Set.of(
+                LocalDate.of(2026, 10, 2),
+                LocalDate.of(2026, 10, 9),
+                LocalDate.of(2026, 10, 20),
+                LocalDate.of(2026, 10, 25));
+
+        List<AnalysisTransaction> transactions = List.of(
+                // 비 온 날 택시 3일
+                new AnalysisTransaction(1L, LocalDate.of(2026, 10, 2), LocalTime.of(18, 30), "카카오T", 12000, "transport", "택시", "out"),
+                new AnalysisTransaction(2L, LocalDate.of(2026, 10, 9), null, "카카오T", 9800, "transport", "택시", "out"),
+                new AnalysisTransaction(3L, LocalDate.of(2026, 10, 20), LocalTime.of(19, 10), "우티", 15600, "transport", "택시", "out"),
+                // 비 안 온 날 택시 (근거에서 빠져야 함)
+                new AnalysisTransaction(4L, LocalDate.of(2026, 10, 7), LocalTime.of(23, 50), "카카오T", 16800, "transport", "택시", "out"),
+                // 비 온 날이지만 다른 카테고리 1건 (3일 미만)
+                new AnalysisTransaction(5L, LocalDate.of(2026, 10, 25), LocalTime.of(12, 0), "스타벅스", 5000, "cafe", null, "out")
+        );
+
+        List<PatternDetector.DetectedPattern> results =
+                new PatternDetector().detectRainPatterns(transactions, rainyDays);
+
+        assertEquals(1, results.size());
+        var p = results.get(0);
+        assertEquals(PatternType.WEATHER, p.type());
+        assertNull(p.dayOfWeek());
+        assertEquals("택시", p.category());            // 세부 분류 우선
+        assertEquals(3, p.observedDays());
+        assertEquals(37400L, p.sumKrw());              // 12000 + 9800 + 15600
+        assertEquals(List.of(1L, 2L, 3L), p.evidenceTransactionIds());
+    }
+
+    @Test
+    void 비_온_날이_2일이면_날씨_패턴이_아니다() {
+
+        Set<LocalDate> rainyDays = Set.of(LocalDate.of(2026, 10, 2), LocalDate.of(2026, 10, 9));
+        List<AnalysisTransaction> transactions = List.of(
+                new AnalysisTransaction(1L, LocalDate.of(2026, 10, 2), LocalTime.of(18, 30), "카카오T", 12000, "transport", "택시", "out"),
+                new AnalysisTransaction(2L, LocalDate.of(2026, 10, 9), LocalTime.of(18, 0), "카카오T", 9800, "transport", "택시", "out"),
+                new AnalysisTransaction(3L, LocalDate.of(2026, 10, 9), LocalTime.of(22, 0), "우티", 15600, "transport", "택시", "out")
+        );
+
+        assertTrue(new PatternDetector().detectRainPatterns(transactions, rainyDays).isEmpty());
+    }
+
+    @Test
+    void 강수일_정보가_없으면_날씨_패턴을_만들지_않는다() {
+        List<AnalysisTransaction> transactions = List.of(
+                new AnalysisTransaction(1L, LocalDate.of(2026, 10, 2), LocalTime.of(18, 30), "카카오T", 12000, "transport", "택시", "out")
+        );
+        assertTrue(new PatternDetector().detectRainPatterns(transactions, Set.of()).isEmpty());
+        assertTrue(new PatternDetector().detectRainPatterns(transactions, null).isEmpty());
+        assertTrue(new PatternDetector().detectRainPatterns(List.of(), Set.of(LocalDate.of(2026, 10, 2))).isEmpty());
+    }
 
     @Test
     void 목요일_배달_반복_패턴_탐지() {

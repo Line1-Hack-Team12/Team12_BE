@@ -14,6 +14,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.nio.charset.StandardCharsets;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.util.Optional;
 import java.time.format.TextStyle;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -44,6 +45,7 @@ public class AnalysisPatternService {
     private final AnalysisSessionRepository sessionRepository;
     private final TransactionRepository transactionRepository;
     private final AiServiceClient aiServiceClient;
+    private final WeatherService weatherService;
 
     public AnalysisData analyze(Long analysisId) {
 
@@ -86,8 +88,15 @@ public class AnalysisPatternService {
                 .max(Comparator.naturalOrder()).orElse(null);
         int dayWindow = (minDate == null) ? 0 : (int) ChronoUnit.DAYS.between(minDate, maxDate) + 1;
 
+        // 세션 지역의 비 온 날. 지역이 없거나 조회에 실패하면 날씨 패턴만 건너뛴다 (다른 패턴은 그대로).
+        // AiPayloadMapper.toSummary 가 같은 조회를 해서 weather_skipped 를 정한다 (캐시되어 외부 호출은 한 번).
+        Optional<Set<LocalDate>> rainyDays = weatherService.rainyDaysFor(
+                session.getRegion(),
+                expenses.stream().map(Transaction::getDate).toList());
+        boolean weatherChecked = rainyDays.isPresent();
 
-        // 4. 요일 및 심야 소비 패턴 탐지
+
+        // 4. 요일 · 심야 · 날씨 소비 패턴 탐지
         PatternDetector detector = new PatternDetector();
 
         List<PatternItem> patterns = new ArrayList<>();
@@ -97,6 +106,9 @@ public class AnalysisPatternService {
 
         detected.addAll(detector.detectWeekdayPatterns(inputs));
         detected.addAll(detector.detectLateNightPatterns(inputs));
+        if (weatherChecked) {
+            detected.addAll(detector.detectRainPatterns(inputs, rainyDays.get()));
+        }
 
         for (var p : detected) {
 
@@ -106,7 +118,12 @@ public class AnalysisPatternService {
             int window;
             String unit;
 
-            if (p.dayOfWeek() != null) {
+            if (p.type() == PatternType.WEATHER) {
+                condition = "비 오는 날 " + p.category() + " 소비";
+                aiCondition.put("weather", "rain");
+                window = rainyDays.map(Set::size).orElse(0);   // "비 온 31일 중 8회"
+                unit = "일";
+            } else if (p.dayOfWeek() != null) {
                 String day = p.dayOfWeek().getDisplayName(
                         TextStyle.FULL, Locale.KOREAN
                 );
@@ -195,7 +212,8 @@ public class AnalysisPatternService {
                 session.getStatus().name(),
                 expenses.size(),
                 totalExpense,
-                List.copyOf(patterns)
+                List.copyOf(patterns),
+                weatherChecked
         );
     }
 
@@ -349,7 +367,8 @@ public class AnalysisPatternService {
             String sessionStatus,
             int transactionCount,
             long totalExpenseKrw,
-            List<PatternItem> patterns
+            List<PatternItem> patterns,
+            boolean weatherChecked      // 지역 날씨를 조회해 날씨 패턴까지 탐지했는가
     ) {}
 
     /**

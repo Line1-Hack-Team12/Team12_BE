@@ -303,6 +303,11 @@ public class NotificationAndSummaryService {
         }
 
         String condition = topPattern.condition();
+        if (condition.startsWith("비 오는 날")) {
+            // 날씨 패턴: 비 예보가 있는 날 아침에 미리 알린다
+            return new PatternSchedule("비 예보일 08:30", "비 예보일", "비 예보 시",
+                    "비 예보가 있는 날 아침, " + condition + " 전", "08:30");
+        }
         boolean isMorningOrCafe = condition.contains("오전") || condition.contains("아침")
                 || condition.contains("카페") || condition.contains("커피");
 
