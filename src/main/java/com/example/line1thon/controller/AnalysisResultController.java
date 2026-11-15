@@ -13,6 +13,7 @@ import com.example.line1thon.dto.NarrativeRegenerateRequest;
 import java.util.List;
 import com.example.line1thon.service.AnalysisPatternService;
 import com.example.line1thon.service.AiNarrativeService;
+import com.example.line1thon.service.NotificationAndSummaryService;
 
 import com.example.line1thon.repository.TransactionRepository;
 import com.example.line1thon.repository.AnalysisSessionRepository;
@@ -35,6 +36,7 @@ public class AnalysisResultController {
     private final TransactionRepository transactionRepository;
     private final AiNarrativeService aiNarrativeService;
     private final AnalysisSessionRepository sessionRepository;
+    private final NotificationAndSummaryService notificationAndSummaryService;
 
 
     // S05: 실제 거래 내역 기반 소비 패턴 분석 결과 및 AI 설명 조회
@@ -222,6 +224,10 @@ public class AnalysisResultController {
         var analysis = analysisPatternService.analyze(analysisId);
         var generated = aiNarrativeService.regenerate(
                 analysisId, analysis.patterns(), request.persona());
+
+        // 세션 말투도 바꾼다. 이후 S05 상세·S07 보고서·S06 알림·시연 발송이 같은 말투로 나오고,
+        // 이미 만든 알림 규칙의 미리보기 문구는 새 말투로 다시 쓴다 (숫자·일정은 그대로).
+        notificationAndSummaryService.applyPersonaChange(analysisId, request.persona());
 
         var narratives = analysis.patterns().stream()
                 .map(pattern -> {

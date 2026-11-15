@@ -211,10 +211,7 @@ public class NotificationAndSummaryService {
                 reasonTagOpt.orElse(null)
         );
 
-        String previewMessage = requestAiNotifyCopy(session, schedule.alertTime())
-                .map(AiServiceClient.NotifyCopyResponse::body)
-                .filter(body -> !body.isBlank())
-                .orElseGet(() -> buildFallbackPreviewMessage(reasonTagOpt, patterns, safeCategory));
+        String previewMessage = buildPreviewMessage(session, schedule.alertTime(), reasonTagOpt, patterns, safeCategory);
 
         DemoNotification notification = DemoNotification.builder()
                 .session(session)
@@ -229,6 +226,45 @@ public class NotificationAndSummaryService {
                 .previewMessage(previewMessage)
                 .build();
         return notificationRepository.save(notification);
+    }
+
+    /** 미리보기 문구: AI /notify-copy 우선(세션 말투), 실패하면 백엔드 문구. */
+    private String buildPreviewMessage(AnalysisSession session, String alertTime, Optional<String> reasonTagOpt,
+                                       List<AnalysisPatternService.PatternItem> patterns, String safeCategory) {
+        return requestAiNotifyCopy(session, alertTime)
+                .map(AiServiceClient.NotifyCopyResponse::body)
+                .filter(body -> !body.isBlank())
+                .orElseGet(() -> buildFallbackPreviewMessage(reasonTagOpt, patterns, safeCategory));
+    }
+
+    /**
+     * S05 말투 변경(POST /api/analyses/{id}/narratives) 뒤 호출. 세션 말투를 바꾸고, 이미 만들어 둔 알림 규칙의
+     * 미리보기 문구를 새 말투로 다시 쓴다. 일정·조건·숫자는 그대로다. 이후 S05 상세·S07 보고서·S06 알림·시연 발송은
+     * 모두 세션 말투를 읽으므로 같은 말투로 나온다.
+     */
+    @Transactional
+    public void applyPersonaChange(Long sessionId, AnalysisSession.Persona persona) {
+        AnalysisSession session = sessionRepository.findById(sessionId)
+                .orElseThrow(() -> new IllegalArgumentException("세션을 찾을 수 없습니다. id=" + sessionId));
+        if (persona == null || persona == session.getPersona()) {
+            return;
+        }
+        session.updatePersona(persona);
+
+        List<DemoNotification> rules = notificationRepository.findBySession(session);
+        if (rules.isEmpty()) {
+            return;
+        }
+        List<AnalysisPatternService.PatternItem> patterns = analysisPatternService.analyze(sessionId).patterns();
+        Long topPatternId = patterns.isEmpty() ? null : patterns.get(0).patternId();
+        List<PatternResponse> answeredList = patternResponseRepository.findByAnalysisId(sessionId).stream()
+                .filter(r -> "ANSWERED".equals(r.getResponseStatus()))
+                .toList();
+        Optional<String> reasonTagOpt = resolveChosenTagLabel(responsesForPattern(answeredList, topPatternId));
+        for (DemoNotification rule : rules) {
+            rule.updatePreviewMessage(buildPreviewMessage(session, rule.getAlertTime(), reasonTagOpt, patterns, "소비"));
+        }
+        log.info("세션 {} 말투 변경 → {} (알림 미리보기 {}건 갱신)", sessionId, persona, rules.size());
     }
 
     private Optional<AiServiceClient.NotifyCopyResponse> requestAiNotifyCopy(AnalysisSession session, String scheduledTime) {
